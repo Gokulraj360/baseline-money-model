@@ -626,6 +626,7 @@ export default function Overview() {
         onClose={() => setHealthOpen(false)}
         title={`Financial Health Index · ${health.score}/100 (${health.grade})`}
         sub="A deterministic assessment of your money model across four critical foundations."
+        footer={<button className="btn btn-primary" onClick={() => setHealthOpen(false)}>Done</button>}
       >
         <div className="stack" style={{ gap: 16 }}>
           {health.pillars.map((pil) => (

@@ -26,6 +26,11 @@ dist-ssr
 # TypeScript cache
 *.tsbuildinfo
 
+# Videos & recording artifacts
+videos/
+*.webm
+*.mp4
+
 # Vercel
 .vercel
 
