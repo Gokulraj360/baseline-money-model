@@ -24,6 +24,8 @@ export default function RecurringScreen() {
   const [cancelling, setCancelling] = useState<Recurring | null>(null);
   const [cancelAll, setCancelAll] = useState(false);
   const [scanning, setScanning] = useState(false);
+  const [scriptTarget, setScriptTarget] = useState<Recurring | null>(null);
+  const [scriptType, setScriptType] = useState<'rbi_cancel' | 'negotiate'>('rbi_cancel');
 
   const allActive = state.recurring.filter((r) => r.status !== 'cancelled');
   const subs = allActive.filter((r) => r.category === 'subscriptions' || r.category === 'fitness');
@@ -114,6 +116,62 @@ export default function RecurringScreen() {
             <div className="label">Next 30 days</div>
             <div className="medium-number" style={{ marginTop: 6 }}>{fmt(upcoming.filter((u) => u.inDays <= 30).reduce((s, u) => s + u.recurring.amount, 0))}</div>
             <div className="tiny" style={{ color: 'var(--muted)', marginTop: 3 }}>{upcoming.filter((u) => u.inDays <= 30).length} scheduled charges</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="panel" style={{ marginBottom: 16 }}>
+        <div className="panel-head">
+          <div>
+            <h2 className="panel-title">Renewal rhythm (Days 1–31)</h2>
+            <p className="panel-sub">Scheduled charges distributed across the 31-day cycle to avoid cash crunches.</p>
+          </div>
+          <span className="badge">{allActive.length} active commitments</span>
+        </div>
+        <div className="panel-body">
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(70px, 1fr))', gap: 6 }}>
+            {Array.from({ length: 31 }, (_, i) => i + 1).map((day) => {
+              const matches = allActive.filter((r) => {
+                const d = new Date(r.nextDate).getDate();
+                return d === day;
+              });
+              const dayTotal = matches.reduce((s, r) => s + r.amount, 0);
+              const isToday = new Date().getDate() === day;
+              return (
+                <div
+                  key={day}
+                  style={{
+                    border: isToday ? '1px solid var(--accent)' : '1px solid var(--line)',
+                    background: matches.length > 0 ? 'var(--surface-2)' : 'transparent',
+                    borderRadius: 4,
+                    padding: '6px 8px',
+                    minHeight: 56,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    justifyContent: 'space-between',
+                  }}
+                >
+                  <div className="row-between">
+                    <span className="tiny mono" style={{ fontWeight: isToday ? 700 : 500, color: isToday ? 'var(--accent)' : 'var(--ink)' }}>
+                      {day}
+                    </span>
+                    {matches.length > 0 && (
+                      <span className="cat-dot" style={{ background: 'var(--accent)', width: 6, height: 6 }} />
+                    )}
+                  </div>
+                  {matches.length > 0 ? (
+                    <div>
+                      <div className="tiny ellipsis" style={{ fontWeight: 600, color: 'var(--ink)' }} title={matches.map(m => `${m.merchant} (${money(m.amount)})`).join(', ')}>
+                        {matches[0].merchant}
+                      </div>
+                      <div className="tiny faint num">{money(dayTotal)}</div>
+                    </div>
+                  ) : (
+                    <span className="tiny faint">—</span>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
       </div>
@@ -269,6 +327,13 @@ export default function RecurringScreen() {
                                       Dormant
                                     </button>
                                   )}
+                                  <button
+                                    className="btn btn-sm btn-ghost"
+                                    title="Negotiation and cancellation script"
+                                    onClick={() => setScriptTarget(r)}
+                                  >
+                                    Script
+                                  </button>
                                   <button className="btn btn-sm btn-danger" onClick={() => setCancelling(r)}>Cancel</button>
                                 </>
                               )}
@@ -390,6 +455,91 @@ export default function RecurringScreen() {
         confirmLabel="Mark all cancelled"
         danger
       />
+
+      {scriptTarget && (
+        <Modal
+          open
+          onClose={() => setScriptTarget(null)}
+          title={`Support script: ${scriptTarget.merchant}`}
+          sub="Pre-drafted correspondence citing regulatory frameworks and retention options."
+          footer={
+            <>
+              <button className="btn" onClick={() => setScriptTarget(null)}>Close</button>
+              <button
+                className="btn btn-primary"
+                onClick={() => {
+                  const text = scriptType === 'rbi_cancel'
+                    ? `Subject: Revocation of E-Mandate Consent - ${scriptTarget.merchant}\n\nDear Customer Support Team,\n\nI am writing to formally request the immediate cancellation of my recurring subscription for ${scriptTarget.merchant} and the immediate revocation of the associated electronic mandate registered on my card/account.\n\nUnder the Reserve Bank of India (RBI) Framework for Processing of E-mandates for Recurring Transactions (Circular RBI/2019-20/47 and subsequent notifications), subscribers have the explicit statutory right to withdraw their mandate consent at any time without obstruction, punitive fees, or forced retention workflows.\n\nSubscription Details:\n- Service: ${scriptTarget.merchant}\n- Registered User: ${state.profile.name}\n- Recurring Charge Amount: INR ${scriptTarget.amount}\n- Scheduled Next Billing Date: ${scriptTarget.nextDate}\n\nPlease confirm in writing within 48 hours that this recurring e-mandate has been cancelled and that no further debit authorizations will be presented to my issuing bank.\n\nThank you,\n${state.profile.name}`
+                    : `Subject: Exploring plan options before renewal - ${scriptTarget.merchant}\n\nHi Support Team,\n\nI have been using ${scriptTarget.merchant} and evaluating my software subscriptions ahead of my upcoming renewal on ${scriptTarget.nextDate}.\n\nBefore making a final renewal decision, I wanted to inquire if there are any loyalty retention discounts, annual prepaid promotional pricing, or temporary pause options available for my account?\n\nI would love to remain a subscriber if we can find a mutually workable rate.\n\nBest regards,\n${state.profile.name}`;
+                  navigator.clipboard.writeText(text);
+                  push('Script copied to clipboard');
+                }}
+              >
+                Copy to clipboard
+              </button>
+            </>
+          }
+        >
+          <div className="stack-sm">
+            <div className="row" style={{ gap: 6, marginBottom: 8 }}>
+              <button
+                type="button"
+                className="chip"
+                aria-pressed={scriptType === 'rbi_cancel'}
+                onClick={() => setScriptType('rbi_cancel')}
+              >
+                RBI E-Mandate Revocation
+              </button>
+              <button
+                type="button"
+                className="chip"
+                aria-pressed={scriptType === 'negotiate'}
+                onClick={() => setScriptType('negotiate')}
+              >
+                Retention & Discount Request
+              </button>
+            </div>
+
+            {scriptType === 'rbi_cancel' ? (
+              <div className="note" style={{ whiteSpace: 'pre-line', fontSize: 11.5, lineHeight: 1.5 }}>
+                {`Subject: Revocation of E-Mandate Consent - ${scriptTarget.merchant}
+
+Dear Customer Support Team,
+
+I am writing to formally request the immediate cancellation of my recurring subscription for ${scriptTarget.merchant} and the immediate revocation of the associated electronic mandate registered on my card/account.
+
+Under the Reserve Bank of India (RBI) Framework for Processing of E-mandates for Recurring Transactions (Circular RBI/2019-20/47 and subsequent notifications), subscribers have the explicit statutory right to withdraw their mandate consent at any time without obstruction, punitive fees, or forced retention workflows.
+
+Subscription Details:
+- Service: ${scriptTarget.merchant}
+- Registered User: ${state.profile.name}
+- Recurring Charge Amount: INR ${scriptTarget.amount}
+- Scheduled Next Billing Date: ${scriptTarget.nextDate}
+
+Please confirm in writing within 48 hours that this recurring e-mandate has been cancelled and that no further debit authorizations will be presented to my issuing bank.
+
+Thank you,
+${state.profile.name}`}
+              </div>
+            ) : (
+              <div className="note" style={{ whiteSpace: 'pre-line', fontSize: 11.5, lineHeight: 1.5 }}>
+                {`Subject: Exploring plan options before renewal - ${scriptTarget.merchant}
+
+Hi Support Team,
+
+I have been using ${scriptTarget.merchant} and evaluating my software subscriptions ahead of my upcoming renewal on ${scriptTarget.nextDate}.
+
+Before making a final renewal decision, I wanted to inquire if there are any loyalty retention discounts, annual prepaid promotional pricing, or temporary pause options available for my account?
+
+I would love to remain a subscriber if we can find a mutually workable rate.
+
+Best regards,
+${state.profile.name}`}
+              </div>
+            )}
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }

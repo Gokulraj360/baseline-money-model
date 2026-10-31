@@ -1,4 +1,4 @@
-import type { AppState, Goal, Recurring, Txn } from '../types';
+import type { AppState, Debt, Goal, Recurring, Txn } from '../types';
 import { CATEGORY_MAP } from '../data/categories';
 import { addMonths, daysBetween, monthKey, nowMonth, todayISO } from '../lib/date';
 
@@ -270,4 +270,374 @@ export function topMerchants(txns: Txn[], month: string, limit = 5): { merchant:
     .map(([merchant, v]) => ({ merchant, ...v }))
     .sort((a, b) => b.amount - a.amount)
     .slice(0, limit);
+}
+
+export interface HealthPillar {
+  name: string;
+  score: number;
+  max: number;
+  tip: string;
+  status: 'good' | 'fair' | 'warn';
+}
+
+export interface FinancialHealth {
+  score: number;
+  grade: 'Excellent' | 'Good' | 'Fair' | 'Needs Attention';
+  pillars: HealthPillar[];
+}
+
+export function financialHealthScore(state: AppState): FinancialHealth {
+  const cov = emergencyCoverage(state);
+  const sr = savingsRate(state);
+  const income = monthlyIncome(state);
+  const fixed = fixedBaseline(state);
+  const fixedRatio = income > 0 ? fixed / income : 0;
+  const dormantCount = state.recurring.filter((r) => r.status !== 'cancelled' && r.usage === 'unused').length;
+
+  // 1. Emergency Fund (25 pts)
+  let emScore = 0;
+  let emTip = 'Emergency fund is below 1 month. Build to 3 months.';
+  let emStatus: HealthPillar['status'] = 'warn';
+  if (cov >= 3) {
+    emScore = 25;
+    emTip = `${cov.toFixed(1)} months of essentials covered (target: 3+).`;
+    emStatus = 'good';
+  } else if (cov >= 2) {
+    emScore = 18;
+    emTip = `${cov.toFixed(1)} months covered. Almost at the 3-month floor.`;
+    emStatus = 'fair';
+  } else if (cov >= 1) {
+    emScore = 10;
+    emTip = `${cov.toFixed(1)} months covered. Allocate more to reach 3 months.`;
+    emStatus = 'fair';
+  }
+
+  // 2. Savings Rate (25 pts)
+  let srScore = 5;
+  let srTip = 'Savings rate below 10%. Target 20%+ for long-term health.';
+  let srStatus: HealthPillar['status'] = 'warn';
+  if (sr >= 25) {
+    srScore = 25;
+    srTip = `Savings rate is an exceptional ${Math.round(sr)}%.`;
+    srStatus = 'good';
+  } else if (sr >= 20) {
+    srScore = 20;
+    srTip = `Savings rate is on target at ${Math.round(sr)}%.`;
+    srStatus = 'good';
+  } else if (sr >= 12) {
+    srScore = 14;
+    srTip = `Savings rate is ${Math.round(sr)}%. Pushing to 20% accelerates goals.`;
+    srStatus = 'fair';
+  }
+
+  // 3. Fixed Cost Ratio (25 pts)
+  let fxScore = 5;
+  let fxTip = `Fixed costs consume ${Math.round(fixedRatio * 100)}% of income (target: <50%).`;
+  let fxStatus: HealthPillar['status'] = 'warn';
+  if (fixedRatio <= 0.40) {
+    fxScore = 25;
+    fxTip = `Low fixed commitments (${Math.round(fixedRatio * 100)}% of salary) leave huge flexibility.`;
+    fxStatus = 'good';
+  } else if (fixedRatio <= 0.50) {
+    fxScore = 20;
+    fxTip = `Fixed commitments are healthy at ${Math.round(fixedRatio * 100)}% of income.`;
+    fxStatus = 'good';
+  } else if (fixedRatio <= 0.60) {
+    fxScore = 12;
+    fxTip = `Fixed costs are ${Math.round(fixedRatio * 100)}% of income. Tight during slower months.`;
+    fxStatus = 'fair';
+  }
+
+  // 4. Waste & Subscriptions (25 pts)
+  let subScore = 5;
+  let subTip = `${dormantCount} dormant subscriptions detected. Cancel to reclaim surplus.`;
+  let subStatus: HealthPillar['status'] = 'warn';
+  if (dormantCount === 0) {
+    subScore = 25;
+    subTip = 'Zero dormant subscriptions detected. Lean commitments.';
+    subStatus = 'good';
+  } else if (dormantCount === 1) {
+    subScore = 15;
+    subTip = '1 unused subscription detected. Review in Recurring radar.';
+    subStatus = 'fair';
+  }
+
+  const score = Math.round(emScore + srScore + fxScore + subScore);
+  const grade: FinancialHealth['grade'] =
+    score >= 85 ? 'Excellent' : score >= 70 ? 'Good' : score >= 50 ? 'Fair' : 'Needs Attention';
+
+  return {
+    score,
+    grade,
+    pillars: [
+      { name: 'Emergency floor', score: emScore, max: 25, tip: emTip, status: emStatus },
+      { name: 'Savings rate', score: srScore, max: 25, tip: srTip, status: srStatus },
+      { name: 'Fixed commitments', score: fxScore, max: 25, tip: fxTip, status: fxStatus },
+      { name: 'Subscription radar', score: subScore, max: 25, tip: subTip, status: subStatus },
+    ],
+  };
+}
+
+export interface PacingItem {
+  category: string;
+  name: string;
+  color: string;
+  spent: number;
+  budget: number;
+  projected: number;
+  pctSpent: number;
+  pctMonth: number;
+  status: 'under' | 'on-track' | 'fast';
+}
+
+export function categoryPacing(state: AppState, month: string = nowMonth()): PacingItem[] {
+  const summary = summarizeMonth(state.txns, month);
+  const isCurrent = month === nowMonth();
+  const day = isCurrent ? Number(todayISO().slice(8, 10)) : 30;
+  const totalDays = 30;
+  const pctMonth = Math.min(100, Math.max(1, Math.round((day / totalDays) * 100)));
+
+  return summary.byCategory
+    .filter((c) => c.kind === 'flexible')
+    .slice(0, 6)
+    .map((c) => {
+      const configured = state.profile.categoryBudgets?.[c.category];
+      const fallback = trailingCategoryAverage(state.txns, [c.category], 3) || c.amount * 1.1;
+      const budget = configured ?? Math.round(fallback);
+      const spent = c.amount;
+      const pctSpent = budget > 0 ? Math.round((spent / budget) * 100) : 100;
+      const projected = day > 0 ? Math.round((spent / day) * totalDays) : spent;
+      const status: PacingItem['status'] =
+        pctSpent > pctMonth + 15 ? 'fast' : pctSpent < pctMonth - 10 ? 'under' : 'on-track';
+
+      return {
+        category: c.category,
+        name: CATEGORY_MAP[c.category]?.name ?? c.category,
+        color: CATEGORY_MAP[c.category]?.color ?? '#888',
+        spent,
+        budget,
+        projected,
+        pctSpent,
+        pctMonth,
+        status,
+      };
+    });
+}
+
+export interface AnomalyItem {
+  id: string;
+  txn: Txn;
+  type: 'duplicate' | 'spike';
+  label: string;
+  severity: 'warn' | 'critical';
+}
+
+export function detectAnomalies(txns: Txn[]): AnomalyItem[] {
+  const anomalies: AnomalyItem[] = [];
+  const approved = txns.filter(isCounted);
+
+  // 1. Detect same-day identical charges (potential duplicate debit)
+  const seen = new Map<string, Txn>();
+  for (const t of approved) {
+    if (t.amount >= 0) continue;
+    const key = `${t.date}_${t.amount}_${t.merchant.toUpperCase().trim()}`;
+    const prev = seen.get(key);
+    if (prev) {
+      anomalies.push({
+        id: `dup_${t.id}`,
+        txn: t,
+        type: 'duplicate',
+        label: `Possible duplicate charge: ${Math.abs(t.amount)} at ${t.merchant} on ${t.date}`,
+        severity: 'critical',
+      });
+    } else {
+      seen.set(key, t);
+    }
+  }
+
+  // 2. Detect single-transaction spending spikes (>3x average)
+  for (const t of approved) {
+    if (t.amount >= 0) continue;
+    const abs = Math.abs(t.amount);
+    if (['dining', 'delivery', 'shopping', 'entertainment'].includes(t.category) && abs >= 4500) {
+      anomalies.push({
+        id: `spike_${t.id}`,
+        txn: t,
+        type: 'spike',
+        label: `Unusually high ${CATEGORY_MAP[t.category]?.name ?? t.category} payment: ₹${abs.toLocaleString('en-IN')}`,
+        severity: 'warn',
+      });
+    }
+  }
+
+  return anomalies.slice(0, 5);
+}
+
+export interface WeekendSplit {
+  weekendAmount: number;
+  weekdayAmount: number;
+  weekendPct: number;
+  weekendCount: number;
+  weekdayCount: number;
+}
+
+export function weekendVsWeekday(txns: Txn[], month: string = nowMonth()): WeekendSplit {
+  let weekendAmount = 0;
+  let weekdayAmount = 0;
+  let weekendCount = 0;
+  let weekdayCount = 0;
+
+  for (const t of txns) {
+    if (monthKey(t.date) !== month || !isCounted(t) || t.amount >= 0) continue;
+    if (!['dining', 'delivery', 'shopping', 'entertainment', 'travel'].includes(t.category)) continue;
+
+    const d = new Date(t.date + 'T12:00:00Z');
+    const day = d.getUTCDay(); // 0 is Sunday, 6 is Saturday
+    const amt = Math.abs(t.amount);
+
+    if (day === 0 || day === 6) {
+      weekendAmount += amt;
+      weekendCount += 1;
+    } else {
+      weekdayAmount += amt;
+      weekdayCount += 1;
+    }
+  }
+
+  const total = weekendAmount + weekdayAmount;
+  const weekendPct = total > 0 ? Math.round((weekendAmount / total) * 100) : 0;
+
+  return {
+    weekendAmount,
+    weekdayAmount,
+    weekendPct,
+    weekendCount,
+    weekdayCount,
+  };
+}
+
+export interface TaxDeductions {
+  sec80C: { current: number; limit: number; remaining: number };
+  sec80D: { current: number; limit: number; remaining: number };
+  hra: { rentPaid: number };
+  totalEligible: number;
+}
+
+export function calculateTaxDeductions(state: AppState): TaxDeductions {
+  // 80C: Investments, ELSS, PF, Life insurance, Tuition (Limit: 1,50,000)
+  const investTxns = state.txns
+    .filter((t) => isCounted(t) && (t.taxSection === '80C' || t.category === 'investments' || t.category === 'insurance'))
+    .reduce((s, t) => s + Math.abs(t.amount), 0);
+  const sec80CSpent = Math.min(150000, investTxns);
+
+  // 80D: Health Insurance (Limit: 25,000)
+  const healthTxns = state.txns
+    .filter((t) => isCounted(t) && (t.taxSection === '80D' || /health insurance|star health|niva bupa/i.test(t.description)))
+    .reduce((s, t) => s + Math.abs(t.amount), 0);
+  const sec80DSpent = Math.min(25000, healthTxns);
+
+  // HRA: Rent paid in full year (or from fixed rent costs)
+  const rentTxns = state.txns
+    .filter((t) => isCounted(t) && t.category === 'rent')
+    .reduce((s, t) => s + Math.abs(t.amount), 0);
+  const rentFixedAnnual = state.profile.fixed
+    .filter((f) => f.category === 'rent')
+    .reduce((s, f) => s + f.amount * 12, 0);
+  const hraRent = rentTxns > 0 ? rentTxns : rentFixedAnnual;
+
+  return {
+    sec80C: { current: sec80CSpent, limit: 150000, remaining: Math.max(0, 150000 - sec80CSpent) },
+    sec80D: { current: sec80DSpent, limit: 25000, remaining: Math.max(0, 25000 - sec80DSpent) },
+    hra: { rentPaid: hraRent },
+    totalEligible: sec80CSpent + sec80DSpent,
+  };
+}
+
+export interface DebtPayoffResult {
+  monthsToPayoff: number;
+  totalInterestPaid: number;
+  totalPaid: number;
+  monthlySchedule: { month: number; balance: number; paid: number; interest: number }[];
+}
+
+export function simulateDebtPayoff(
+  debts: Debt[],
+  extraMonthly = 0,
+  strategy: 'snowball' | 'avalanche' = 'avalanche'
+): DebtPayoffResult {
+  if (!debts.length) {
+    return { monthsToPayoff: 0, totalInterestPaid: 0, totalPaid: 0, monthlySchedule: [] };
+  }
+
+  // Clone debt items
+  const pool = debts.map((d) => ({
+    ...d,
+    currentPrincipal: d.principal,
+    monthlyRate: d.interestRate / 100 / 12,
+  }));
+
+  let totalInterest = 0;
+  let totalPaid = 0;
+  let month = 0;
+  const maxMonths = 120; // 10 years max
+  const monthlySchedule: DebtPayoffResult['monthlySchedule'] = [];
+
+  while (month < maxMonths && pool.some((d) => d.currentPrincipal > 0.01)) {
+    month += 1;
+    let monthInterest = 0;
+    let monthPaid = 0;
+
+    // 1. Accrue monthly interest
+    for (const d of pool) {
+      if (d.currentPrincipal <= 0) continue;
+      const interest = d.currentPrincipal * d.monthlyRate;
+      d.currentPrincipal += interest;
+      monthInterest += interest;
+      totalInterest += interest;
+    }
+
+    // 2. Pay minimums
+    for (const d of pool) {
+      if (d.currentPrincipal <= 0) continue;
+      const payment = Math.min(d.currentPrincipal, d.minimumMonthly);
+      d.currentPrincipal -= payment;
+      monthPaid += payment;
+      totalPaid += payment;
+    }
+
+    // 3. Apply extra payment to targeted debt
+    let extraLeft = extraMonthly;
+    // Sort pool by strategy
+    const sorted = [...pool]
+      .filter((d) => d.currentPrincipal > 0)
+      .sort((a, b) =>
+        strategy === 'avalanche'
+          ? b.interestRate - a.interestRate
+          : a.currentPrincipal - b.currentPrincipal
+      );
+
+    for (const target of sorted) {
+      if (extraLeft <= 0) break;
+      const extraPay = Math.min(target.currentPrincipal, extraLeft);
+      target.currentPrincipal -= extraPay;
+      extraLeft -= extraPay;
+      monthPaid += extraPay;
+      totalPaid += extraPay;
+    }
+
+    const currentTotalBalance = pool.reduce((s, d) => s + Math.max(0, d.currentPrincipal), 0);
+    monthlySchedule.push({
+      month,
+      balance: Math.round(currentTotalBalance),
+      paid: Math.round(monthPaid),
+      interest: Math.round(monthInterest),
+    });
+  }
+
+  return {
+    monthsToPayoff: month,
+    totalInterestPaid: Math.round(totalInterest),
+    totalPaid: Math.round(totalPaid),
+    monthlySchedule,
+  };
 }

@@ -7,15 +7,21 @@ import { buildReport } from '../report';
 import { deriveNudges } from '../nudges';
 import {
   baseModel,
+  calculateTaxDeductions,
+  categoryPacing,
   currentBalance,
+  detectAnomalies,
   emergencyCoverage,
+  financialHealthScore,
   goalRequiredMonthly,
   monthlyIncome,
   safeToSpend,
   savingsRate,
+  simulateDebtPayoff,
   summarizeMonth,
+  weekendVsWeekday,
 } from '../finance';
-import { baselineResult, runSimulation } from '../simulate';
+import { baselineResult, compareScenarios, runSimulation } from '../simulate';
 import { buildSeedTxns, SAMPLE_CSV, SAMPLE_SMS, seedState } from '../../data/seed';
 
 describe('parsing messy statements', () => {
@@ -325,5 +331,94 @@ describe('reports and nudges', () => {
     expect(again.map((t) => t.id)).toEqual(state.txns.map((t) => t.id));
     const months = new Set(state.txns.map((t) => t.date.slice(0, 7)));
     expect(months.size).toBeGreaterThanOrEqual(5);
+  });
+});
+
+describe('advanced financial intelligence functions', () => {
+  const state = seedState();
+
+  it('computes financial health score (0-100 index) with subscores', () => {
+    const health = financialHealthScore(state);
+    expect(health.score).toBeGreaterThanOrEqual(0);
+    expect(health.score).toBeLessThanOrEqual(100);
+    expect(['Excellent', 'Good', 'Fair', 'Needs Attention']).toContain(health.grade);
+    expect(health.pillars).toHaveLength(4);
+    health.pillars.forEach((p) => {
+      expect(p.score).toBeGreaterThanOrEqual(0);
+      expect(p.max).toBeGreaterThan(0);
+    });
+  });
+
+  it('calculates category pacing against monthly budget ceilings', () => {
+    const pacing = categoryPacing(state);
+    expect(pacing.length).toBeGreaterThan(0);
+    const dining = pacing.find((p) => p.category === 'dining');
+    expect(dining).toBeDefined();
+    expect(dining?.budget).toBeGreaterThan(0);
+    expect(['fast', 'under', 'on-track']).toContain(dining?.status);
+    expect(dining?.pctMonth).toBeGreaterThanOrEqual(0);
+  });
+
+  it('detects duplicate debit anomalies and spend spikes', () => {
+    const mockTxns: Txn[] = [
+      { id: 'tx1', date: '2026-10-10', description: 'SWIGGY ORDER', merchant: 'Swiggy', amount: -540, category: 'dining', confidence: 1, why: 'test', accountId: 'acc_hdfc', source: 'seed', hash: 'h1' },
+      { id: 'tx2', date: '2026-10-10', description: 'SWIGGY ORDER', merchant: 'Swiggy', amount: -540, category: 'dining', confidence: 1, why: 'test', accountId: 'acc_hdfc', source: 'seed', hash: 'h2' },
+      { id: 'tx3', date: '2026-10-12', description: 'LUXURY WATCH', merchant: 'Titan', amount: -85000, category: 'shopping', confidence: 1, why: 'test', accountId: 'acc_hdfc', source: 'seed', hash: 'h3' },
+    ];
+    const anomalies = detectAnomalies(mockTxns);
+    expect(anomalies.length).toBeGreaterThanOrEqual(1);
+    const dup = anomalies.find((a) => a.type === 'duplicate');
+    expect(dup).toBeDefined();
+    expect(dup?.label).toContain('duplicate');
+  });
+
+  it('computes weekend vs weekday discretionary spending breakdown', () => {
+    const impulse = weekendVsWeekday(state.txns, '2026-10');
+    expect(impulse.weekendAmount).toBeGreaterThanOrEqual(0);
+    expect(impulse.weekdayAmount).toBeGreaterThanOrEqual(0);
+    expect(typeof impulse.weekendPct).toBe('number');
+  });
+
+  it('calculates Chapter VI-A Indian Income Tax deductions (80C, 80D, HRA)', () => {
+    const tax = calculateTaxDeductions(state);
+    expect(tax.sec80C.limit).toBe(150000);
+    expect(tax.sec80D.limit).toBe(25000);
+    expect(tax.sec80C.current).toBeLessThanOrEqual(150000);
+    expect(tax.sec80D.current).toBeLessThanOrEqual(25000);
+    expect(tax.totalEligible).toBe(tax.sec80C.current + tax.sec80D.current);
+    expect(tax.hra.rentPaid).toBeGreaterThan(0);
+  });
+
+  it('simulates debt payoff and extra payment interest acceleration', () => {
+    const debts = state.profile.debts || [
+      { id: 'd1', name: 'Car Loan', principal: 300000, interestRate: 9.0, minimumMonthly: 7000 },
+      { id: 'd2', name: 'Credit Card', principal: 40000, interestRate: 36.0, minimumMonthly: 2000 },
+    ];
+    const base = simulateDebtPayoff(debts, 0, 'avalanche');
+    const accelerated = simulateDebtPayoff(debts, 5000, 'avalanche');
+    expect(base.monthsToPayoff).toBeGreaterThan(0);
+    expect(accelerated.monthsToPayoff).toBeLessThanOrEqual(base.monthsToPayoff);
+    expect(accelerated.totalInterestPaid).toBeLessThanOrEqual(base.totalInterestPaid);
+  });
+
+  it('simulates macroeconomic inflation compounding on flexible spend', () => {
+    const noInflation = runSimulation(state, { diningCut: 0, groceriesCut: 0, cancelledSubs: [], rentChange: 0, incomeChange: 0, oneOffAmount: 0, oneOffMonth: 2, extraSavings: 0, inflationRate: 0 }, 12);
+    const withInflation = runSimulation(state, { diningCut: 0, groceriesCut: 0, cancelledSubs: [], rentChange: 0, incomeChange: 0, oneOffAmount: 0, oneOffMonth: 2, extraSavings: 0, inflationRate: 10 }, 12);
+    expect(withInflation.endBalance).toBeLessThan(noInflation.endBalance);
+  });
+
+  it('simulates income shock and job loss scenario with zero salary months', () => {
+    const normal = runSimulation(state, { diningCut: 0, groceriesCut: 0, cancelledSubs: [], rentChange: 0, incomeChange: 0, oneOffAmount: 0, oneOffMonth: 2, extraSavings: 0, jobLossMonths: 0 }, 12);
+    const shock = runSimulation(state, { diningCut: 0, groceriesCut: 0, cancelledSubs: [], rentChange: 0, incomeChange: 0, oneOffAmount: 0, oneOffMonth: 2, extraSavings: 0, jobLossMonths: 3 }, 12);
+    expect(shock.endBalance).toBeLessThan(normal.endBalance);
+  });
+
+  it('compares multiple scenarios side-by-side with compareScenarios', () => {
+    const comparison = compareScenarios(state, [
+      { id: 'sc_base', name: 'Baseline', levers: { diningCut: 0, groceriesCut: 0, cancelledSubs: [], rentChange: 0, incomeChange: 0, oneOffAmount: 0, oneOffMonth: 1, extraSavings: 0 } },
+      { id: 'sc_austerity', name: 'Austerity', levers: { diningCut: 50, groceriesCut: 25, cancelledSubs: [], rentChange: 0, incomeChange: 0, oneOffAmount: 0, oneOffMonth: 1, extraSavings: 0 } },
+    ]);
+    expect(comparison).toHaveLength(2);
+    expect(comparison[1].endBalance).toBeGreaterThan(comparison[0].endBalance);
   });
 });

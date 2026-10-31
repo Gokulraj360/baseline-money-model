@@ -1,6 +1,8 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useReducer } from 'react';
 import type {
   AppState,
+  CustomAlert,
+  Debt,
   Goal,
   ImportBatch,
   IncomeSource,
@@ -117,6 +119,12 @@ interface AppContextValue {
   applyLevers: (levers: ScenarioLevers) => void;
   setNudgeState: (id: string, status: 'open' | 'snoozed' | 'done' | 'dismissed') => void;
   updateSettings: (patch: Partial<Settings>) => void;
+  setCategoryBudget: (category: string, amount: number) => void;
+  upsertDebt: (debt: Debt) => void;
+  removeDebt: (id: string) => void;
+  addCustomAlert: (alert: Omit<CustomAlert, 'id' | 'createdAt'>) => void;
+  removeCustomAlert: (id: string) => void;
+  toggleReimbursed: (txnId: string) => void;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -770,6 +778,83 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     [update]
   );
 
+  const setCategoryBudget = useCallback(
+    (category: string, amount: number) => {
+      update((s) => ({
+        ...s,
+        profile: {
+          ...s.profile,
+          categoryBudgets: {
+            ...(s.profile.categoryBudgets ?? {}),
+            [category]: amount,
+          },
+        },
+      }));
+    },
+    [update]
+  );
+
+  const upsertDebt = useCallback(
+    (debt: Debt) => {
+      update((s) => {
+        const debts = s.profile.debts ?? [];
+        const exists = debts.some((d) => d.id === debt.id);
+        return {
+          ...s,
+          profile: {
+            ...s.profile,
+            debts: exists ? debts.map((d) => (d.id === debt.id ? debt : d)) : [...debts, debt],
+          },
+        };
+      });
+    },
+    [update]
+  );
+
+  const removeDebt = useCallback(
+    (id: string) => {
+      update((s) => ({
+        ...s,
+        profile: {
+          ...s.profile,
+          debts: (s.profile.debts ?? []).filter((d) => d.id !== id),
+        },
+      }));
+    },
+    [update]
+  );
+
+  const addCustomAlert = useCallback(
+    (alert: Omit<CustomAlert, 'id' | 'createdAt'>) => {
+      const id = uid('alt');
+      update((s) => ({
+        ...s,
+        customAlerts: [{ ...alert, id, createdAt: Date.now() }, ...(s.customAlerts ?? [])],
+      }));
+    },
+    [update]
+  );
+
+  const removeCustomAlert = useCallback(
+    (id: string) => {
+      update((s) => ({
+        ...s,
+        customAlerts: (s.customAlerts ?? []).filter((a) => a.id !== id),
+      }));
+    },
+    [update]
+  );
+
+  const toggleReimbursed = useCallback(
+    (txnId: string) => {
+      update((s) => ({
+        ...s,
+        txns: s.txns.map((t) => (t.id === txnId ? { ...t, reimbursed: !t.reimbursed } : t)),
+      }));
+    },
+    [update]
+  );
+
   const value = useMemo<AppContextValue>(
     () => ({
       state,
@@ -806,6 +891,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       applyLevers,
       setNudgeState,
       updateSettings,
+      setCategoryBudget,
+      upsertDebt,
+      removeDebt,
+      addCustomAlert,
+      removeCustomAlert,
+      toggleReimbursed,
     }),
     [
       state, update, undo, reset, importRows, approveBatch, discardBatch, correctCategory,
@@ -813,6 +904,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       applyRuleRetro, scanRecurring, updateRecurring, addRecurring, updateProfile, upsertIncome,
       removeIncome, upsertFixed, removeFixed, upsertGoal, deleteGoal, contributeGoal, saveScenario,
       deleteScenario, applyScenario, applyLevers, setNudgeState, updateSettings,
+      setCategoryBudget, upsertDebt, removeDebt, addCustomAlert, removeCustomAlert, toggleReimbursed,
     ]
   );
 

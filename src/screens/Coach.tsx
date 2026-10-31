@@ -1,10 +1,12 @@
 import { useMemo, useState } from 'react';
-import { useApp } from '../store/AppStore';
+import { useApp, uid } from '../store/AppStore';
 import { deriveNudges, nudgeKindLabel } from '../domain/nudges';
-import type { Nudge, NudgeKind } from '../types';
+import type { CustomAlert, Nudge, NudgeKind } from '../types';
 import { money, pct } from '../lib/format';
 import { daysInMonth, nowMonth, todayISO } from '../lib/date';
 import {
+  currentBalance,
+  detectAnomalies,
   emergencyCoverage,
   goalRequiredMonthly,
   monthlyIncome,
@@ -14,22 +16,24 @@ import {
   summarizeMonth,
   trailingCategoryAverage,
 } from '../domain/finance';
-import { CATEGORY_MAP } from '../data/categories';
+import { CATEGORIES, CATEGORY_MAP } from '../data/categories';
 import { Icon } from '../components/Icon';
 import { NudgeCard } from '../components/NudgeCard';
-import { Empty, Switch, Tabs, useToast } from '../components/ui';
+import { Empty, Modal, Switch, Tabs, useToast } from '../components/ui';
 import { navigate } from '../lib/router';
 
 const KINDS: NudgeKind[] = ['drift', 'price-change', 'unused', 'goal', 'buffer', 'payday', 'anomaly'];
 
 export default function Coach() {
-  const { state, setNudgeState, updateSettings } = useApp();
+  const { state, setNudgeState, updateSettings, addCustomAlert, removeCustomAlert } = useApp();
   const { push } = useToast();
   const [tab, setTab] = useState<'open' | 'snoozed' | 'handled'>('open');
   const [question, setQuestion] = useState('');
   const [asked, setAsked] = useState<{ title: string; body: string; math?: string } | null>(null);
+  const [customAlertModal, setCustomAlertModal] = useState(false);
 
   const nudges = useMemo(() => deriveNudges(state), [state]);
+  const anomalies = useMemo(() => detectAnomalies(state.txns), [state.txns]);
   const open = nudges.filter((n) => n.status === 'open');
   const snoozed = nudges.filter((n) => n.status === 'snoozed');
   const handled = nudges.filter((n) => n.status === 'done' || n.status === 'dismissed');
@@ -71,6 +75,33 @@ export default function Coach() {
           </button>
         </div>
       </div>
+
+      {anomalies.length > 0 && (
+        <div className="panel" style={{ marginBottom: 16, borderLeft: '2px solid var(--negative)' }}>
+          <div className="panel-body">
+            <div className="row-between wrap" style={{ gap: 12 }}>
+              <div>
+                <div className="row" style={{ gap: 8 }}>
+                  <Icon name="alert" size={15} style={{ color: 'var(--negative)' }} />
+                  <h2 className="panel-title">{anomalies.length} transaction anomal{anomalies.length === 1 ? 'y' : 'ies'} detected</h2>
+                </div>
+                <div className="stack-sm" style={{ marginTop: 6 }}>
+                  {anomalies.map((a) => (
+                    <div key={a.id} className="row-between wrap small" style={{ gap: 8 }}>
+                      <span className="muted">
+                        <strong style={{ color: 'var(--ink)' }}>{a.label}</strong> — {a.txn.description}
+                      </span>
+                      <button className="linkish tiny" onClick={() => navigate(`/transactions?q=${encodeURIComponent(a.txn.merchant)}`)}>
+                        Inspect in ledger →
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="grid">
         <section className="panel col-8">
@@ -187,6 +218,53 @@ export default function Coach() {
               </div>
             </div>
           </section>
+
+          <section className="panel">
+            <div className="panel-head">
+              <div>
+                <h2 className="panel-title">Custom alerts</h2>
+                <p className="panel-sub">Custom triggers for balances and category ceilings.</p>
+              </div>
+              <button className="btn btn-sm" onClick={() => setCustomAlertModal(true)}>
+                <Icon name="plus" size={12} /> Add
+              </button>
+            </div>
+            <div className="panel-body">
+              {(state.customAlerts || []).length > 0 ? (
+                <div className="stack-sm">
+                  {(state.customAlerts || []).map((alert) => {
+                    const triggered = evaluateAlert(alert, state);
+                    return (
+                      <div key={alert.id} className="row-between small" style={{ padding: '6px 0', borderBottom: '1px solid var(--line)' }}>
+                        <div>
+                          <div className="row" style={{ gap: 6, alignItems: 'center' }}>
+                            <span style={{ fontWeight: 600 }}>{alert.name}</span>
+                            <span className={`badge ${triggered ? 'neg' : 'pos'}`} style={{ fontSize: 10 }}>
+                              {triggered ? 'Triggered!' : 'Normal'}
+                            </span>
+                          </div>
+                          <div className="tiny muted">
+                            {alert.condition === 'balance_below' && `When balance < ${money(alert.threshold)}`}
+                            {alert.condition === 'category_exceeds' && `When ${alert.category} > ${money(alert.threshold)}`}
+                            {alert.condition === 'single_txn_above' && `When single charge > ${money(alert.threshold)}`}
+                          </div>
+                        </div>
+                        <button
+                          className="btn btn-ghost btn-icon"
+                          aria-label={`Remove ${alert.name}`}
+                          onClick={() => { removeCustomAlert(alert.id); push('Alert removed'); }}
+                        >
+                          <Icon name="trash" size={12} />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="small muted">No custom alerts set. Set an alert to get notified when balances drop or category spend peaks.</p>
+              )}
+            </div>
+          </section>
         </aside>
 
         <section className="panel col-12">
@@ -241,6 +319,17 @@ export default function Coach() {
           </div>
         </section>
       </div>
+
+      {customAlertModal && (
+        <CustomAlertModal
+          onClose={() => setCustomAlertModal(false)}
+          onSave={(a) => {
+            addCustomAlert(a);
+            push(`Alert "${a.name}" created`);
+            setCustomAlertModal(false);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -369,4 +458,94 @@ function answer(q: string, state: ReturnType<typeof useApp>['state']): { title: 
     )} is safe to spend after everything already promised. Ask about a goal, an amount, a subscription, or your buffer.`,
     math: `${state.txns.length} transactions across ${new Set(state.txns.map((t) => t.date.slice(0, 7))).size} months.`,
   };
+}
+
+function evaluateAlert(alert: CustomAlert, state: ReturnType<typeof useApp>['state']): boolean {
+  if (!alert.enabled) return false;
+  if (alert.condition === 'balance_below') {
+    const bal = currentBalance(state);
+    return bal < alert.threshold;
+  }
+  if (alert.condition === 'category_exceeds' && alert.category) {
+    const summary = summarizeMonth(state.txns, nowMonth());
+    const catSpent = summary.byCategory.find((c) => c.category === alert.category)?.amount || 0;
+    return catSpent > alert.threshold;
+  }
+  if (alert.condition === 'single_txn_above') {
+    return state.txns.some((t) => Math.abs(t.amount) > alert.threshold);
+  }
+  return false;
+}
+
+function CustomAlertModal({
+  onClose,
+  onSave,
+}: {
+  onClose: () => void;
+  onSave: (a: Omit<CustomAlert, 'id' | 'createdAt'>) => void;
+}) {
+  const [name, setName] = useState('');
+  const [condition, setCondition] = useState<CustomAlert['condition']>('category_exceeds');
+  const [threshold, setThreshold] = useState('10000');
+  const [category, setCategory] = useState('dining');
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Create threshold alert"
+      sub="Define custom parameters that trigger proactive warnings."
+      footer={
+        <>
+          <button className="btn" onClick={onClose}>Cancel</button>
+          <button
+            className="btn btn-primary"
+            disabled={!name.trim() || !Number(threshold)}
+            onClick={() => onSave({
+              name: name.trim(),
+              condition,
+              threshold: Number(threshold),
+              category: condition === 'category_exceeds' ? category : undefined,
+              enabled: true,
+            })}
+          >
+            Create alert
+          </button>
+        </>
+      }
+    >
+      <div className="stack-sm">
+        <div className="field">
+          <label>Alert title</label>
+          <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Dining limit alert or Cash floor" />
+        </div>
+        <div className="field">
+          <label>Condition</label>
+          <select className="select" value={condition} onChange={(e) => setCondition(e.target.value as any)}>
+            <option value="category_exceeds">Category monthly spend exceeds</option>
+            <option value="balance_below">Account balance drops below floor</option>
+            <option value="single_txn_above">Single transaction exceeds</option>
+          </select>
+        </div>
+        {condition === 'category_exceeds' && (
+          <div className="field">
+            <label>Category</label>
+            <select className="select" value={category} onChange={(e) => setCategory(e.target.value)}>
+              {CATEGORIES.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </div>
+        )}
+        <div className="field">
+          <label>Threshold amount</label>
+          <input
+            className="input num"
+            inputMode="decimal"
+            value={threshold}
+            onChange={(e) => setThreshold(e.target.value.replace(/[^0-9]/g, ''))}
+            placeholder="10000"
+          />
+        </div>
+      </div>
+    </Modal>
+  );
 }

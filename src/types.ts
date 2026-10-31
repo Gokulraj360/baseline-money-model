@@ -21,6 +21,10 @@ export interface Txn {
   hash: string;
   pending?: boolean;
   createdAt?: number;
+  tags?: string[];
+  isReimbursable?: boolean;
+  reimbursed?: boolean;
+  taxSection?: '80C' | '80D' | 'HRA' | 'none';
 }
 
 export interface Category {
@@ -96,6 +100,16 @@ export interface Goal {
   archived?: boolean;
 }
 
+export interface Debt {
+  id: string;
+  name: string;
+  principal: number;
+  interestRate: number; // annual %, e.g. 10.5
+  minimumMonthly: number;
+  dueDate?: number;
+  category?: string;
+}
+
 export interface Profile {
   name: string;
   currency: 'INR';
@@ -105,6 +119,8 @@ export interface Profile {
   income: IncomeSource[];
   fixed: FixedCost[];
   openingBalance: number;
+  categoryBudgets?: Record<string, number>;
+  debts?: Debt[];
 }
 
 export interface Account {
@@ -147,6 +163,18 @@ export interface ScenarioLevers {
   oneOffAmount: number;
   oneOffMonth: number; // 0..11
   extraSavings: number;
+  inflationRate?: number; // 0..15 (%)
+  jobLossMonths?: number; // 0..12 months without salary
+}
+
+export interface CustomAlert {
+  id: string;
+  name: string;
+  condition: 'category_exceeds' | 'balance_below' | 'single_txn_above';
+  threshold: number;
+  category?: string;
+  enabled: boolean;
+  createdAt: number;
 }
 
 export interface Scenario {
@@ -201,6 +229,7 @@ export interface AppState {
   batches: ImportBatch[];
   corrections: Correction[];
   seedMonth: string;
+  customAlerts?: CustomAlert[];
   lastAction?: { label: string; snapshot: string; at: number } | null;
 }
 

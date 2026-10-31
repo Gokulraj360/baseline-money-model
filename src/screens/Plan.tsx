@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useApp, uid } from '../store/AppStore';
-import type { FixedCost, Goal, IncomeSource } from '../types';
+import type { Debt, FixedCost, Goal, IncomeSource } from '../types';
 import { CATEGORIES, CATEGORY_MAP } from '../data/categories';
 import { money, pct } from '../lib/format';
 import { daysBetween, friendlyDate, todayISO } from '../lib/date';
@@ -8,6 +8,7 @@ import { useMoney } from '../hooks/useMoney';
 import { Icon } from '../components/Icon';
 import { Confirm, Empty, Modal, useToast } from '../components/ui';
 import {
+  calculateTaxDeductions,
   emergencyCoverage,
   fixedBaseline,
   flexibleBaseline,
@@ -15,6 +16,7 @@ import {
   goalRequiredMonthly,
   monthlyIncome,
   monthlySurplus,
+  simulateDebtPayoff,
 } from '../domain/finance';
 
 const GOAL_COLORS = ['#4C6B8A', '#A65A4A', '#7A6A4A', '#4F7A5B', '#8A5A6B', '#3F6E7A'];
@@ -22,7 +24,7 @@ const GOAL_COLORS = ['#4C6B8A', '#A65A4A', '#7A6A4A', '#4F7A5B', '#8A5A6B', '#3F
 export default function Plan() {
   const {
     state, updateProfile, upsertIncome, removeIncome, upsertFixed, removeFixed,
-    upsertGoal, deleteGoal, contributeGoal,
+    upsertGoal, deleteGoal, contributeGoal, setCategoryBudget, upsertDebt, removeDebt,
   } = useApp();
   const { push } = useToast();
   const fmt = useMoney();
@@ -37,6 +39,11 @@ export default function Plan() {
   const [goalDelete, setGoalDelete] = useState<Goal | null>(null);
   const [contributing, setContributing] = useState<Goal | null>(null);
   const [contribution, setContribution] = useState('');
+  const [debtNew, setDebtNew] = useState(false);
+  const [debtEdit, setDebtEdit] = useState<Debt | null>(null);
+  const [debtStrategy, setDebtStrategy] = useState<'avalanche' | 'snowball'>('avalanche');
+  const [extraDebtPayment, setExtraDebtPayment] = useState<number>(5000);
+  const [catBudgetEdit, setCatBudgetEdit] = useState<{ id: string; name: string; amount: number } | null>(null);
 
   const income = monthlyIncome(state);
   const fixed = fixedBaseline(state);
@@ -46,6 +53,16 @@ export default function Plan() {
   const free = income - fixed - flexible - goalsMonthly;
   const coverage = emergencyCoverage(state);
   const incomePct = (n: number) => (income > 0 ? Math.max(0, Math.min(100, (n / income) * 100)) : 0);
+
+  const debts = state.profile.debts || [];
+  const baseDebtResult = simulateDebtPayoff(debts, 0, debtStrategy);
+  const accelDebtResult = simulateDebtPayoff(debts, extraDebtPayment, debtStrategy);
+  const interestSaved = Math.max(0, baseDebtResult.totalInterestPaid - accelDebtResult.totalInterestPaid);
+  const monthsSaved = Math.max(0, baseDebtResult.monthsToPayoff - accelDebtResult.monthsToPayoff);
+
+  const tax = calculateTaxDeductions(state);
+  const categoryBudgets = state.profile.categoryBudgets || {};
+  const flexibleCats = CATEGORIES.filter((c) => !['income', 'transfer', 'rent', 'utilities'].includes(c.id));
 
   return (
     <div className="page">
@@ -312,6 +329,212 @@ export default function Plan() {
             {!state.profile.fixed.length && <Empty icon="wallet" title="No fixed costs" body="Rent, utilities, and insurance belong here so the model can protect them." />}
           </div>
         </section>
+
+        <section className="panel col-6">
+          <div className="panel-head">
+            <div>
+              <h2 className="panel-title">Category budget caps</h2>
+              <p className="panel-sub">Set explicit monthly limits on flexible categories.</p>
+            </div>
+            <span className="badge">
+              {Object.keys(categoryBudgets).length} active caps
+            </span>
+          </div>
+          <div className="panel-body flush">
+            <table className="tbl">
+              <tbody>
+                {flexibleCats.slice(0, 6).map((c) => {
+                  const cap = categoryBudgets[c.id];
+                  return (
+                    <tr key={c.id}>
+                      <td>
+                        <div className="row" style={{ gap: 7 }}>
+                          <span className="cat-dot" style={{ background: c.color }} />
+                          <div className="txn-merchant">{c.name}</div>
+                        </div>
+                      </td>
+                      <td className="money">
+                        {cap ? money(cap) : <span className="faint tiny">No cap</span>}
+                      </td>
+                      <td className="right" style={{ width: 64 }}>
+                        <button
+                          className="btn btn-ghost btn-icon"
+                          aria-label={`Edit ${c.name} budget`}
+                          onClick={() => setCatBudgetEdit({ id: c.id, name: c.name, amount: cap || 10000 })}
+                        >
+                          <Icon name="pencil" size={13} />
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="panel-foot">
+            <span className="tiny muted">
+              Total flexible budgeted: {money(Object.values(categoryBudgets).reduce((s, v) => s + v, 0))}
+            </span>
+          </div>
+        </section>
+
+        <section className="panel col-6">
+          <div className="panel-head">
+            <div>
+              <h2 className="panel-title">Debt payoff accelerator</h2>
+              <p className="panel-sub">Snowball vs avalanche acceleration model.</p>
+            </div>
+            <button className="btn btn-sm" onClick={() => setDebtNew(true)}>
+              <Icon name="plus" size={12} /> Add loan
+            </button>
+          </div>
+          <div className="panel-body">
+            <div className="row-between wrap" style={{ gap: 8, marginBottom: 12 }}>
+              <div className="row" style={{ gap: 4 }}>
+                <button
+                  type="button"
+                  className="chip"
+                  aria-pressed={debtStrategy === 'avalanche'}
+                  onClick={() => setDebtStrategy('avalanche')}
+                  title="Pay highest interest rate debt first"
+                >
+                  Avalanche (High APR)
+                </button>
+                <button
+                  type="button"
+                  className="chip"
+                  aria-pressed={debtStrategy === 'snowball'}
+                  onClick={() => setDebtStrategy('snowball')}
+                  title="Pay smallest balance debt first"
+                >
+                  Snowball (Low Balance)
+                </button>
+              </div>
+              <div className="row" style={{ gap: 6, alignItems: 'center' }}>
+                <span className="tiny muted">+Extra:</span>
+                {[0, 2000, 5000, 10000].map((amt) => (
+                  <button
+                    key={amt}
+                    type="button"
+                    className="chip"
+                    aria-pressed={extraDebtPayment === amt}
+                    onClick={() => setExtraDebtPayment(amt)}
+                  >
+                    +{money(amt)}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {debts.length > 0 ? (
+              <>
+                <div className="row wrap" style={{ gap: 12, padding: '10px 12px', background: 'var(--surface-2)', borderRadius: 4, marginBottom: 12 }}>
+                  <div>
+                    <div className="tiny muted">Debt-free in</div>
+                    <div className="medium-number" style={{ fontSize: 18 }}>{accelDebtResult.monthsToPayoff} mos</div>
+                    {monthsSaved > 0 && <div className="tiny" style={{ color: 'var(--positive)' }}>{monthsSaved} mos earlier</div>}
+                  </div>
+                  <div style={{ borderLeft: '1px solid var(--line)', paddingLeft: 12 }}>
+                    <div className="tiny muted">Total interest</div>
+                    <div className="medium-number" style={{ fontSize: 18 }}>{money(accelDebtResult.totalInterestPaid)}</div>
+                    {interestSaved > 0 && <div className="tiny" style={{ color: 'var(--positive)' }}>Saves {money(interestSaved)}</div>}
+                  </div>
+                </div>
+
+                <table className="tbl">
+                  <tbody>
+                    {debts.map((d) => (
+                      <tr key={d.id}>
+                        <td>
+                          <div className="txn-merchant">{d.name}</div>
+                          <div className="tiny muted">{d.interestRate}% APR · Min {money(d.minimumMonthly)}/mo</div>
+                        </td>
+                        <td className="money">{money(d.principal)}</td>
+                        <td className="right" style={{ width: 64 }}>
+                          <div className="row" style={{ gap: 2, justifyContent: 'flex-end' }}>
+                            <button className="btn btn-ghost btn-icon" aria-label={`Edit ${d.name}`} onClick={() => setDebtEdit(d)}>
+                              <Icon name="pencil" size={13} />
+                            </button>
+                            <button className="btn btn-ghost btn-icon" aria-label={`Remove ${d.name}`} onClick={() => { removeDebt(d.id); push('Debt removed'); }}>
+                              <Icon name="trash" size={13} />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </>
+            ) : (
+              <Empty icon="shield" title="Debt free" body="No active debts or loans recorded. Great job keeping liabilities zero!" />
+            )}
+          </div>
+        </section>
+
+        <section className="panel col-12">
+          <div className="panel-head">
+            <div>
+              <h2 className="panel-title">Tax deductions tracker (Old regime)</h2>
+              <p className="panel-sub">
+                Indian Income Tax Chapter VI-A deductions computed from recorded investments, health insurance, and rent receipts.
+              </p>
+            </div>
+            <span className="badge pos">Est. tax saved {money(Math.round(tax.totalEligible * 0.208))}</span>
+          </div>
+          <div className="panel-body">
+            <div className="grid">
+              <div className="col-4">
+                <div className="row-between">
+                  <span className="small"><strong>Section 80C</strong> (Investments/PF/ELSS)</span>
+                  <span className="num small">{money(tax.sec80C.current)} / {money(tax.sec80C.limit)}</span>
+                </div>
+                <div className="progress" style={{ marginTop: 8 }}>
+                  <span style={{ width: `${Math.min(100, (tax.sec80C.current / tax.sec80C.limit) * 100)}%`, background: 'var(--accent)' }} />
+                </div>
+                <div className="tiny muted" style={{ marginTop: 4 }}>
+                  {money(tax.sec80C.remaining)} remaining room
+                </div>
+              </div>
+
+              <div className="col-4">
+                <div className="row-between">
+                  <span className="small"><strong>Section 80D</strong> (Health insurance)</span>
+                  <span className="num small">{money(tax.sec80D.current)} / {money(tax.sec80D.limit)}</span>
+                </div>
+                <div className="progress" style={{ marginTop: 8 }}>
+                  <span style={{ width: `${Math.min(100, (tax.sec80D.current / tax.sec80D.limit) * 100)}%`, background: 'var(--ink)' }} />
+                </div>
+                <div className="tiny muted" style={{ marginTop: 4 }}>
+                  {money(tax.sec80D.remaining)} remaining room
+                </div>
+              </div>
+
+              <div className="col-4">
+                <div className="row-between">
+                  <span className="small"><strong>HRA Annual Rent</strong> (Rent paid)</span>
+                  <span className="num small">{money(tax.hra.rentPaid)}</span>
+                </div>
+                <div className="progress" style={{ marginTop: 8 }}>
+                  <span style={{ width: `${Math.min(100, (tax.hra.rentPaid / 300000) * 100)}%`, background: 'var(--positive)' }} />
+                </div>
+                <div className="tiny muted" style={{ marginTop: 4 }}>
+                  Eligible against basic salary under Rule 2A
+                </div>
+              </div>
+            </div>
+
+            <div className="divider dashed" style={{ margin: '14px 0 10px' }} />
+            <div className="row-between wrap" style={{ gap: 8 }}>
+              <div className="small muted">
+                Total eligible Chapter VI-A deductions: <strong className="num" style={{ color: 'var(--ink)' }}>{money(tax.totalEligible)}</strong>.
+                Tax saved calculated at 20% slab + 4% cess.
+              </div>
+              <div className="tiny faint">
+                Descriptive estimation only. Section 115BAC (New Tax Regime) has lower base slabs without these deductions.
+              </div>
+            </div>
+          </div>
+        </section>
       </div>
 
       <Modal
@@ -425,6 +648,77 @@ export default function Plan() {
         confirmLabel="Delete goal"
         danger
       />
+
+      {catBudgetEdit && (
+        <Modal
+          open
+          onClose={() => setCatBudgetEdit(null)}
+          title={`Set monthly budget: ${catBudgetEdit.name}`}
+          sub="Spending in this category will pace against this monthly ceiling."
+          footer={
+            <>
+              <button className="btn" onClick={() => setCatBudgetEdit(null)}>Cancel</button>
+              <button
+                className="btn btn-primary"
+                onClick={() => {
+                  setCategoryBudget(catBudgetEdit.id, catBudgetEdit.amount);
+                  push(`Budget cap for ${catBudgetEdit.name} updated`);
+                  setCatBudgetEdit(null);
+                }}
+              >
+                Save cap
+              </button>
+            </>
+          }
+        >
+          <div className="field">
+            <label>Monthly budget amount</label>
+            <input
+              className="input num"
+              inputMode="decimal"
+              value={catBudgetEdit.amount || ''}
+              onChange={(e) => setCatBudgetEdit({ ...catBudgetEdit, amount: Number(e.target.value.replace(/[^0-9]/g, '')) })}
+              placeholder="e.g. 12000"
+            />
+          </div>
+          <div className="row wrap" style={{ gap: 6, marginTop: 10 }}>
+            {[5000, 10000, 15000, 20000].map((v) => (
+              <button
+                key={v}
+                type="button"
+                className="chip"
+                onClick={() => setCatBudgetEdit({ ...catBudgetEdit, amount: v })}
+              >
+                {money(v)}
+              </button>
+            ))}
+          </div>
+        </Modal>
+      )}
+
+      {debtNew && (
+        <DebtModal
+          title="Add loan / liability"
+          onClose={() => setDebtNew(false)}
+          onSave={(d) => {
+            upsertDebt({ ...d, id: uid('debt') });
+            push('Loan added');
+            setDebtNew(false);
+          }}
+        />
+      )}
+      {debtEdit && (
+        <DebtModal
+          title="Edit loan"
+          initial={debtEdit}
+          onClose={() => setDebtEdit(null)}
+          onSave={(d) => {
+            upsertDebt({ ...d, id: debtEdit.id });
+            push('Loan updated');
+            setDebtEdit(null);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -608,6 +902,81 @@ function GoalModal({
         <div className={`note ${monthlyNum >= required * 0.92 ? '' : 'guard'}`}>
           At {money(monthlyNum)} a month you need {money(required)} to land on time ({monthsLeft} months left).{' '}
           {monthlyNum >= required * 0.92 ? 'That works.' : `Add ${money(Math.max(0, required - monthlyNum))} a month to stay on pace.`}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function DebtModal({
+  title, initial, onClose, onSave,
+}: {
+  title: string;
+  initial?: Debt;
+  onClose: () => void;
+  onSave: (d: Omit<Debt, 'id'>) => void;
+}) {
+  const [name, setName] = useState(initial?.name ?? '');
+  const [principal, setPrincipal] = useState(String(initial?.principal ?? ''));
+  const [interestRate, setInterestRate] = useState(String(initial?.interestRate ?? '10.5'));
+  const [minimumMonthly, setMinimumMonthly] = useState(String(initial?.minimumMonthly ?? ''));
+  const [category, setCategory] = useState(initial?.category ?? 'transport');
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={title}
+      sub="Loan balance, interest rate (APR), and required minimum payment."
+      footer={
+        <>
+          <button className="btn" onClick={onClose}>Cancel</button>
+          <button
+            className="btn btn-primary"
+            disabled={!name || !Number(principal) || !Number(minimumMonthly)}
+            onClick={() => onSave({
+              name,
+              principal: Number(principal),
+              interestRate: Number(interestRate),
+              minimumMonthly: Number(minimumMonthly),
+              category,
+            })}
+          >
+            Save loan
+          </button>
+        </>
+      }
+    >
+      <div className="stack-sm">
+        <div className="field">
+          <label>Loan / Creditor name</label>
+          <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Car Loan (HDFC) or ICICI Card" />
+        </div>
+        <div className="form-row">
+          <div className="field">
+            <label>Outstanding balance</label>
+            <input className="input num" inputMode="decimal" value={principal} onChange={(e) => setPrincipal(e.target.value.replace(/[^0-9.]/g, ''))} placeholder="e.g. 250000" />
+          </div>
+          <div className="field">
+            <label>Annual Interest Rate (%)</label>
+            <input className="input num" inputMode="decimal" value={interestRate} onChange={(e) => setInterestRate(e.target.value.replace(/[^0-9.]/g, ''))} placeholder="e.g. 9.5" />
+          </div>
+        </div>
+        <div className="form-row">
+          <div className="field">
+            <label>Minimum monthly payment</label>
+            <input className="input num" inputMode="decimal" value={minimumMonthly} onChange={(e) => setMinimumMonthly(e.target.value.replace(/[^0-9.]/g, ''))} placeholder="e.g. 5000" />
+          </div>
+          <div className="field">
+            <label>Category</label>
+            <select className="select" value={category} onChange={(e) => setCategory(e.target.value)}>
+              <option value="transport">Transport / Auto</option>
+              <option value="shopping">Credit Card</option>
+              <option value="rent">Housing / Home Loan</option>
+              <option value="education">Education</option>
+              <option value="other">Personal / Other</option>
+            </select>
+          </div>
         </div>
       </div>
     </Modal>

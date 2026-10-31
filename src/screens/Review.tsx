@@ -4,6 +4,7 @@ import { addMonths, monthLabel, nowMonth, todayISO } from '../lib/date';
 import { money, pct } from '../lib/format';
 import { useMoney } from '../hooks/useMoney';
 import { buildReport } from '../domain/report';
+import { calculateTaxDeductions } from '../domain/finance';
 import { CATEGORY_MAP } from '../data/categories';
 import { Icon } from '../components/Icon';
 import { CategoryBars, Donut } from '../components/charts';
@@ -23,6 +24,10 @@ export default function Review() {
   const [month, setMonth] = useState(months[0] ?? nowMonth());
   const report = useMemo(() => buildReport(state, month), [state, month]);
   const s = report.summary;
+  const tax = useMemo(() => calculateTaxDeductions(state), [state]);
+  const priorTxns = state.txns.filter((t) => t.date.slice(0, 7) < month);
+  const opening = state.profile.openingBalance + priorTxns.reduce((sum, t) => sum + t.amount, 0);
+  const closing = opening + s.income - s.outflow;
 
   const exportReport = () => {
     const rows = report.categories.map((c) => ({
@@ -128,6 +133,28 @@ export default function Review() {
           <div className="panel-foot">
             <span className="tiny" style={{ color: 'var(--muted)' }}>Previous month {monthLabel(addMonths(month, -1), true)}</span>
             <span className="num small">{fmt(report.prev.outflow)}</span>
+          </div>
+        </section>
+
+        <section className="panel col-12">
+          <div className="panel-head">
+            <div>
+              <h2 className="panel-title">Monthly cashflow waterfall</h2>
+              <p className="panel-sub">Step-by-step bridge from opening balance to closing balance for {monthLabel(month)}.</p>
+            </div>
+            <span className="badge">
+              Net balance {closing >= opening ? '+' : '−'}{fmt(Math.abs(closing - opening))}
+            </span>
+          </div>
+          <div className="panel-body">
+            <CashflowWaterfall
+              opening={opening}
+              income={s.income}
+              fixed={s.fixed}
+              flexible={s.flexible}
+              savings={s.savings}
+              closing={closing}
+            />
           </div>
         </section>
 
@@ -314,6 +341,56 @@ export default function Review() {
         <section className="panel col-12">
           <div className="panel-head">
             <div>
+              <h2 className="panel-title">Indian Income Tax Chapter VI-A Review</h2>
+              <p className="panel-sub">Cumulative deductions and tax position under the Old Tax Regime.</p>
+            </div>
+            <span className="badge pos">Est. annual tax saved {money(Math.round(tax.totalEligible * 0.208))}</span>
+          </div>
+          <div className="panel-body">
+            <div className="grid">
+              <div className="col-4">
+                <div className="label">Section 80C Deductions</div>
+                <div className="medium-number" style={{ fontSize: 18, marginTop: 4 }}>
+                  {money(tax.sec80C.current)} <span className="small muted">/ {money(tax.sec80C.limit)}</span>
+                </div>
+                <div className="progress" style={{ marginTop: 8 }}>
+                  <span style={{ width: `${Math.min(100, (tax.sec80C.current / tax.sec80C.limit) * 100)}%`, background: 'var(--accent)' }} />
+                </div>
+                <div className="tiny muted" style={{ marginTop: 4 }}>
+                  Room remaining: {money(tax.sec80C.remaining)}
+                </div>
+              </div>
+              <div className="col-4">
+                <div className="label">Section 80D Health Insurance</div>
+                <div className="medium-number" style={{ fontSize: 18, marginTop: 4 }}>
+                  {money(tax.sec80D.current)} <span className="small muted">/ {money(tax.sec80D.limit)}</span>
+                </div>
+                <div className="progress" style={{ marginTop: 8 }}>
+                  <span style={{ width: `${Math.min(100, (tax.sec80D.current / tax.sec80D.limit) * 100)}%`, background: 'var(--ink)' }} />
+                </div>
+                <div className="tiny muted" style={{ marginTop: 4 }}>
+                  Room remaining: {money(tax.sec80D.remaining)}
+                </div>
+              </div>
+              <div className="col-4">
+                <div className="label">House Rent Allowance (HRA)</div>
+                <div className="medium-number" style={{ fontSize: 18, marginTop: 4 }}>
+                  {money(tax.hra.rentPaid)}
+                </div>
+                <div className="progress" style={{ marginTop: 8 }}>
+                  <span style={{ width: `${Math.min(100, (tax.hra.rentPaid / 300000) * 100)}%`, background: 'var(--positive)' }} />
+                </div>
+                <div className="tiny muted" style={{ marginTop: 4 }}>
+                  Annual rent tracked for Section 10(13A)
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="panel col-12">
+          <div className="panel-head">
+            <div>
               <h2 className="panel-title">Assumptions and guardrails</h2>
             </div>
           </div>
@@ -349,6 +426,112 @@ export default function Review() {
           </div>
         </section>
       </div>
+    </div>
+  );
+}
+
+function CashflowWaterfall({
+  opening,
+  income,
+  fixed,
+  flexible,
+  savings,
+  closing,
+}: {
+  opening: number;
+  income: number;
+  fixed: number;
+  flexible: number;
+  savings: number;
+  closing: number;
+}) {
+  const steps = [
+    { label: 'Opening', amount: opening, type: 'total', start: 0, end: opening },
+    { label: '+ Income', amount: income, type: 'inflow', start: opening, end: opening + income },
+    { label: '− Fixed', amount: -fixed, type: 'outflow', start: opening + income - fixed, end: opening + income },
+    { label: '− Flexible', amount: -flexible, type: 'outflow', start: opening + income - fixed - flexible, end: opening + income - fixed },
+    { label: '− Saved', amount: -savings, type: 'outflow', start: closing, end: closing + savings },
+    { label: 'Closing', amount: closing, type: 'total', start: 0, end: closing },
+  ];
+
+  const maxVal = Math.max(...steps.map((st) => Math.max(st.start, st.end, Math.abs(st.amount))), 1) * 1.15;
+  const width = 640;
+  const height = 180;
+  const padBottom = 28;
+  const padTop = 24;
+  const chartHeight = height - padBottom - padTop;
+  const colWidth = 64;
+  const gap = (width - colWidth * steps.length) / (steps.length + 1);
+
+  const getY = (val: number) => padTop + chartHeight - (Math.max(0, val) / maxVal) * chartHeight;
+
+  return (
+    <div style={{ width: '100%', overflowX: 'auto' }}>
+      <svg viewBox={`0 0 ${width} ${height}`} style={{ width: '100%', minWidth: 480, height: 'auto', display: 'block' }}>
+        {/* Zero baseline */}
+        <line x1={0} y1={padTop + chartHeight} x2={width} y2={padTop + chartHeight} stroke="var(--line)" strokeWidth="1" />
+
+        {steps.map((st, i) => {
+          const x = gap + i * (colWidth + gap);
+          const topVal = Math.max(st.start, st.end);
+          const bottomVal = Math.min(st.start, st.end);
+          const yTop = getY(topVal);
+          const yBottom = getY(bottomVal);
+          const barHeight = Math.max(3, yBottom - yTop);
+          const color = st.type === 'total' ? 'var(--ink)' : st.type === 'inflow' ? 'var(--positive)' : 'var(--accent)';
+
+          // Connector line to next step
+          const nextStep = steps[i + 1];
+          const nextX = gap + (i + 1) * (colWidth + gap);
+
+          return (
+            <g key={st.label}>
+              <rect
+                x={x}
+                y={yTop}
+                width={colWidth}
+                height={barHeight}
+                fill={color}
+                rx={2}
+              />
+              {/* Connector line */}
+              {nextStep && (
+                <line
+                  x1={x + colWidth}
+                  y1={getY(st.end)}
+                  x2={nextX}
+                  y2={getY(st.end)}
+                  stroke="var(--line-strong)"
+                  strokeWidth="1"
+                  strokeDasharray="2 2"
+                />
+              )}
+              {/* Value label */}
+              <text
+                x={x + colWidth / 2}
+                y={yTop - 6}
+                textAnchor="middle"
+                fontSize="10"
+                fill="var(--ink)"
+                fontFamily="var(--num-font)"
+                fontWeight="600"
+              >
+                {money(Math.abs(st.amount))}
+              </text>
+              {/* X-axis label */}
+              <text
+                x={x + colWidth / 2}
+                y={height - 8}
+                textAnchor="middle"
+                fontSize="10.5"
+                fill="var(--muted)"
+              >
+                {st.label}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
     </div>
   );
 }

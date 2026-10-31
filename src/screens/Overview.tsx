@@ -6,8 +6,10 @@ import { money, pct } from '../lib/format';
 import { navigate } from '../lib/router';
 import {
   baseModel,
+  categoryPacing,
   currentBalance,
   emergencyCoverage,
+  financialHealthScore,
   goalProgress,
   goalRequiredMonthly,
   monthlyIncome,
@@ -16,6 +18,7 @@ import {
   savingsRate,
   summarizeMonth,
   upcomingBills,
+  weekendVsWeekday,
 } from '../domain/finance';
 import { baselineResult } from '../domain/simulate';
 import { deriveNudges } from '../domain/nudges';
@@ -30,6 +33,7 @@ export default function Overview() {
   const { push } = useToast();
   const fmt = useMoney();
   const [explain, setExplain] = useState(false);
+  const [healthOpen, setHealthOpen] = useState(false);
   const [afford, setAfford] = useState('');
   const [affordResult, setAffordResult] = useState<null | 'comfortable' | 'tight' | 'not-now'>(null);
 
@@ -42,6 +46,9 @@ export default function Overview() {
   const surplus = monthlySurplus(state);
   const rate = savingsRate(state);
   const coverage = emergencyCoverage(state);
+  const health = useMemo(() => financialHealthScore(state), [state]);
+  const pacing = useMemo(() => categoryPacing(state, now), [state, now]);
+  const weekend = useMemo(() => weekendVsWeekday(state.txns, now), [state.txns, now]);
   const nudges = deriveNudges(state).filter((n) => n.status === 'open').slice(0, 3);
   const bills = upcomingBills(state, 7);
   const summary = summarizeMonth(state.txns, now);
@@ -116,6 +123,22 @@ export default function Overview() {
           </p>
         </div>
         <div className="head-actions">
+          <button
+            className="btn"
+            onClick={() => setHealthOpen(true)}
+            title="Click to view Financial Health Index breakdown"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+          >
+            <span
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: '50%',
+                background: health.score >= 75 ? 'var(--positive)' : health.score >= 50 ? 'var(--accent)' : 'var(--negative)',
+              }}
+            />
+            <span className="small">Health: <strong className="mono">{health.score}</strong>/100 · {health.grade}</span>
+          </button>
           <button className="btn" onClick={() => navigate('/simulate')}>
             <Icon name="sliders" size={14} /> Run a scenario
           </button>
@@ -501,12 +524,124 @@ export default function Overview() {
             )}
           </div>
         </section>
+
+        {/* Category Pacing & Burn Rate */}
+        <section className="panel col-7">
+          <div className="panel-head">
+            <div>
+              <h2 className="panel-title">Category pacing & burn rate</h2>
+              <p className="panel-sub">
+                Spend vs budget pacing for {monthLabel(now)}. Day {Math.min(30, Number(today.slice(8, 10)))} of 30 ({pacing[0]?.pctMonth ?? 100}% of month).
+              </p>
+            </div>
+            <button className="linkish small" onClick={() => navigate('/plan')}>Edit budget caps →</button>
+          </div>
+          <div className="panel-body">
+            <div className="stack" style={{ gap: 14 }}>
+              {pacing.map((p) => (
+                <div key={p.category}>
+                  <div className="row-between small" style={{ marginBottom: 4 }}>
+                    <span className="row" style={{ gap: 6 }}>
+                      <span className="cat-dot" style={{ background: p.color }} />
+                      <strong style={{ fontSize: 13 }}>{p.name}</strong>
+                    </span>
+                    <span className="row" style={{ gap: 10 }}>
+                      <span className="num">{fmt(p.spent)}</span>
+                      <span className="faint">/ {fmt(p.budget)}</span>
+                      <span
+                        className={`badge ${
+                          p.status === 'under' ? 'pos' : p.status === 'fast' ? 'warn' : 'outline'
+                        }`}
+                        style={{ fontSize: 10, padding: '1px 6px' }}
+                      >
+                        {p.status === 'under' ? 'Under pace' : p.status === 'fast' ? 'Pacing fast' : 'On track'}
+                      </span>
+                    </span>
+                  </div>
+                  <div className="progress thin" style={{ height: 6 }}>
+                    <span
+                      style={{
+                        width: `${Math.min(100, p.pctSpent)}%`,
+                        background: p.status === 'fast' ? 'var(--negative)' : p.color,
+                      }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="panel-foot">
+            <span className="tiny muted">Budgets adjust with your 3-month trailing average or custom ceilings set in Plan.</span>
+          </div>
+        </section>
+
+        {/* Weekend vs Weekday Discretionary Insights */}
+        <section className="panel col-5">
+          <div className="panel-head">
+            <div>
+              <h2 className="panel-title">Weekend vs weekday</h2>
+              <p className="panel-sub">Discretionary spending rhythm for {monthLabel(now)}</p>
+            </div>
+            <Icon name="clock" size={15} />
+          </div>
+          <div className="panel-body">
+            <div className="meter" style={{ height: 10 }} aria-hidden="true">
+              <span style={{ width: `${weekend.weekendPct}%`, background: 'var(--accent)' }} title="Weekend" />
+              <span style={{ width: `${100 - weekend.weekendPct}%`, background: 'var(--line-strong)' }} title="Weekday" />
+            </div>
+            <div className="row wrap" style={{ gap: 16, marginTop: 12 }}>
+              <div className="row" style={{ gap: 6 }}>
+                <i style={{ width: 8, height: 8, background: 'var(--accent)', borderRadius: 2 }} />
+                <span className="small muted">Weekends (Sat & Sun):</span>
+                <span className="num small">{fmt(weekend.weekendAmount)}</span>
+                <span className="tiny faint">({weekend.weekendPct}%)</span>
+              </div>
+              <div className="row" style={{ gap: 6 }}>
+                <i style={{ width: 8, height: 8, background: 'var(--line-strong)', borderRadius: 2 }} />
+                <span className="small muted">Weekdays (Mon–Fri):</span>
+                <span className="num small">{fmt(weekend.weekdayAmount)}</span>
+                <span className="tiny faint">({100 - weekend.weekendPct}%)</span>
+              </div>
+            </div>
+            <p className="small muted" style={{ marginTop: 14, lineHeight: 1.6 }}>
+              {weekend.weekendPct >= 40
+                ? `${weekend.weekendPct}% of discretionary spending occurs on Saturdays and Sundays. Weekend outings represent your largest flex lever.`
+                : 'Your discretionary spending is evenly distributed across the week without concentrated weekend spikes.'}
+            </p>
+          </div>
+          <div className="panel-foot">
+            <button className="linkish small" onClick={() => navigate('/review')}>View monthly report →</button>
+          </div>
+        </section>
       </div>
 
       <p className="tiny" style={{ color: 'var(--muted)', marginTop: 24, maxWidth: '80ch' }}>
         Baseline models your own numbers. It is not investment, tax, or credit advice, and it does not recommend
         securities or products. Every projection is an estimate, shown with its assumptions.
       </p>
+
+      {/* Financial Health Index Modal */}
+      <Modal
+        open={healthOpen}
+        onClose={() => setHealthOpen(false)}
+        title={`Financial Health Index · ${health.score}/100 (${health.grade})`}
+        sub="A deterministic assessment of your money model across four critical foundations."
+      >
+        <div className="stack" style={{ gap: 16 }}>
+          {health.pillars.map((pil) => (
+            <div key={pil.name} className="callout" style={{ borderLeft: `3px solid ${pil.status === 'good' ? 'var(--positive)' : pil.status === 'fair' ? 'var(--accent)' : 'var(--negative)'}` }}>
+              <div className="row-between">
+                <strong style={{ fontSize: 13 }}>{pil.name}</strong>
+                <span className="badge" style={{ fontSize: 11 }}>{pil.score} / {pil.max} pts</span>
+              </div>
+              <p className="small muted" style={{ marginTop: 4, lineHeight: 1.5 }}>{pil.tip}</p>
+            </div>
+          ))}
+          <p className="tiny muted" style={{ marginTop: 4 }}>
+            Health scores update in real time with every transaction and recurring commitment change. No arbitrary credit scores — pure cashflow resilience.
+          </p>
+        </div>
+      </Modal>
 
       <Modal
         open={explain}

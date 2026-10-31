@@ -7,7 +7,7 @@ import { useMoney } from '../hooks/useMoney';
 import { Icon } from '../components/Icon';
 import { Confirm, Empty, Modal, useToast } from '../components/ui';
 import { ScenarioChart } from '../components/charts';
-import { DEFAULT_LEVERS, leverCount, runSimulation, scenarioSummary } from '../domain/simulate';
+import { compareScenarios, DEFAULT_LEVERS, leverCount, runSimulation, scenarioSummary } from '../domain/simulate';
 import { currentBalance, safeToSpend, subscriptionRecurring } from '../domain/finance';
 import { monthlyAmount } from '../domain/finance';
 
@@ -103,6 +103,8 @@ export default function Simulate() {
           { label: 'Cancel dormant', apply: () => setLevers({ ...DEFAULT_LEVERS, cancelledSubs: state.recurring.filter((r) => r.usage === 'unused' && r.status !== 'cancelled').map((r) => r.id) }) },
           { label: 'Salary +10%', apply: () => setLevers({ ...DEFAULT_LEVERS, incomeChange: 10 }) },
           { label: 'Big purchase ₹1L', apply: () => setLevers({ ...DEFAULT_LEVERS, oneOffAmount: 100000, oneOffMonth: 1 }) },
+          { label: 'Inflation stress +8%', apply: () => setLevers({ ...DEFAULT_LEVERS, inflationRate: 8 }) },
+          { label: 'Job gap (3 mo)', apply: () => setLevers({ ...DEFAULT_LEVERS, jobLossMonths: 3 }) },
         ].map((p) => (
           <button key={p.label} className="chip" onClick={() => { p.apply(); push(`Applied preset: ${p.label}`); }}>{p.label}</button>
         ))}
@@ -243,6 +245,46 @@ export default function Simulate() {
                   value={levers.extraSavings}
                   aria-label="Extra monthly savings"
                   onChange={(e) => set('extraSavings', Number(e.target.value))}
+                />
+              </div>
+            </div>
+
+            <div className="lever">
+              <div className="lever-head">
+                <div>
+                  <div className="small strong">Annual inflation stress test</div>
+                  <div className="tiny" style={{ color: 'var(--muted)' }}>Compounds flexible expenses over the 12 months</div>
+                </div>
+                <span className={`lever-value ${(levers.inflationRate ?? 0) > 0 ? 'neg' : ''}`}>
+                  {levers.inflationRate ?? 0}%/year
+                </span>
+              </div>
+              <div className="row" style={{ gap: 8 }}>
+                <input
+                  type="range" min={0} max={15} step={1}
+                  value={levers.inflationRate ?? 0}
+                  aria-label="Inflation percentage"
+                  onChange={(e) => set('inflationRate', Number(e.target.value))}
+                />
+              </div>
+            </div>
+
+            <div className="lever">
+              <div className="lever-head">
+                <div>
+                  <div className="small strong">Job loss / income shock</div>
+                  <div className="tiny" style={{ color: 'var(--muted)' }}>Simulate months with ₹0 active salary inflow</div>
+                </div>
+                <span className={`lever-value ${(levers.jobLossMonths ?? 0) > 0 ? 'neg' : ''}`}>
+                  {levers.jobLossMonths ?? 0} month{(levers.jobLossMonths ?? 0) === 1 ? '' : 's'}
+                </span>
+              </div>
+              <div className="row" style={{ gap: 8 }}>
+                <input
+                  type="range" min={0} max={12} step={1}
+                  value={levers.jobLossMonths ?? 0}
+                  aria-label="Job loss duration in months"
+                  onChange={(e) => set('jobLossMonths', Number(e.target.value))}
                 />
               </div>
             </div>
@@ -433,6 +475,61 @@ export default function Simulate() {
                     </div>
                   );
                 })}
+              </div>
+            )}
+
+            {state.scenarios.length > 0 && (
+              <div style={{ marginTop: 20 }}>
+                <div className="label" style={{ marginBottom: 8 }}>Multi-Scenario Comparison Matrix</div>
+                <div className="table-wrap">
+                  <table className="tbl">
+                    <thead>
+                      <tr>
+                        <th>Scenario</th>
+                        <th className="right">Surplus / mo</th>
+                        <th className="right">12-Mo End Balance</th>
+                        <th className="right">Delta vs Base</th>
+                        <th className="right">Runway</th>
+                        <th>First Goal ETA</th>
+                        <th className="right">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr style={{ background: 'var(--surface-2)' }}>
+                        <td><strong>Baseline</strong> <span className="badge outline" style={{ marginLeft: 6 }}>Live Profile</span></td>
+                        <td className="num right pos">{fmt(baseline.monthly.surplus)}</td>
+                        <td className="num right">{fmt(baseline.endBalance)}</td>
+                        <td className="num right muted">—</td>
+                        <td className="num right">{baseline.runwayMonths.toFixed(1)} mo</td>
+                        <td className="small">{baseline.goalEtas.find((g) => g.monthKey)?.monthKey ?? '—'}</td>
+                        <td className="right"><button className="btn btn-sm" onClick={() => { setLevers({ ...DEFAULT_LEVERS }); push('Reset to baseline'); }}>Reset</button></td>
+                      </tr>
+                      {compareScenarios(state, state.scenarios).map((c) => (
+                        <tr key={c.id}>
+                          <td><strong>{c.name}</strong></td>
+                          <td className={`num right ${c.surplus >= 0 ? 'pos' : 'neg'}`}>{fmt(c.surplus)}</td>
+                          <td className="num right">{fmt(c.endBalance)}</td>
+                          <td className={`num right ${c.deltaEndBalance >= 0 ? 'pos' : 'neg'}`}>
+                            {c.deltaEndBalance >= 0 ? '+' : '−'}{fmt(Math.abs(c.deltaEndBalance))}
+                          </td>
+                          <td className="num right">{c.runwayMonths.toFixed(1)} mo</td>
+                          <td className="small">{c.firstGoalETA ?? '—'}</td>
+                          <td className="right">
+                            <button
+                              className="btn btn-sm"
+                              onClick={() => {
+                                const target = state.scenarios.find((x) => x.id === c.id);
+                                if (target) { setLevers(target.levers); push(`Loaded ${c.name}`); }
+                              }}
+                            >
+                              Load
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
           </div>

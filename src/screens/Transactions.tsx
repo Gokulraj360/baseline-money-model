@@ -47,7 +47,7 @@ function CategorySelect({
 }
 
 export default function Transactions() {
-  const { state, correctCategory, bulkCategory, deleteTxns, updateTxn, splitTxn, addTxn, undo } = useApp();
+  const { state, correctCategory, bulkCategory, deleteTxns, updateTxn, splitTxn, addTxn, undo, toggleReimbursed } = useApp();
   const { push } = useToast();
   const route = useRoute();
 
@@ -58,6 +58,10 @@ export default function Transactions() {
   const [direction, setDirection] = useState<'all' | 'out' | 'in'>('all');
   const [sort, setSort] = useState<SortKey>('date-desc');
   const [pendingOnly, setPendingOnly] = useState(false);
+  const [tagFilter, setTagFilter] = useState('all');
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  const [merchantDetail, setMerchantDetail] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [page, setPage] = useState(0);
 
@@ -92,6 +96,14 @@ export default function Transactions() {
     [state.txns]
   );
 
+  const allTags = useMemo(() => {
+    const set = new Set<string>();
+    state.txns.forEach((t) => {
+      t.tags?.forEach((tg) => set.add(tg));
+    });
+    return [...set].sort();
+  }, [state.txns]);
+
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
     let list = state.txns.filter((t) => {
@@ -101,8 +113,17 @@ export default function Transactions() {
       if (direction === 'out' && t.amount >= 0) return false;
       if (direction === 'in' && t.amount <= 0) return false;
       if (pendingOnly && !t.pending) return false;
+      if (tagFilter !== 'all') {
+        if (tagFilter === 'reimbursable') {
+          if (!t.isReimbursable) return false;
+        } else if (!t.tags?.includes(tagFilter)) {
+          return false;
+        }
+      }
+      if (startDate && t.date < startDate) return false;
+      if (endDate && t.date > endDate) return false;
       if (needle) {
-        const hay = `${t.description} ${t.merchant} ${t.note ?? ''} ${t.category} ${Math.abs(t.amount)}`.toLowerCase();
+        const hay = `${t.description} ${t.merchant} ${t.note ?? ''} ${t.category} ${(t.tags ?? []).join(' ')} ${Math.abs(t.amount)}`.toLowerCase();
         if (!hay.includes(needle)) return false;
       }
       return true;
@@ -116,9 +137,9 @@ export default function Transactions() {
       }
     });
     return list;
-  }, [state.txns, search, category, month, account, direction, sort, pendingOnly]);
+  }, [state.txns, search, category, month, account, direction, sort, pendingOnly, tagFilter, startDate, endDate]);
 
-  useEffect(() => { setPage(0); }, [search, category, month, account, direction, pendingOnly]);
+  useEffect(() => { setPage(0); }, [search, category, month, account, direction, pendingOnly, tagFilter, startDate, endDate]);
 
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const visible = filtered.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
@@ -219,6 +240,32 @@ export default function Transactions() {
               <option value="out">Money out</option>
               <option value="in">Money in</option>
             </select>
+            <select className="select" style={{ width: 'auto' }} value={tagFilter} onChange={(e) => setTagFilter(e.target.value)} aria-label="Filter by tag">
+              <option value="all">All tags</option>
+              <option value="reimbursable">Reimbursable only</option>
+              {allTags.map((tg) => <option key={tg} value={tg}>{tg}</option>)}
+            </select>
+            <div className="row" style={{ gap: 4, alignItems: 'center' }}>
+              <input
+                type="date"
+                className="input"
+                style={{ width: 130, padding: '4px 6px', fontSize: 11.5 }}
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                placeholder="From date"
+                title="Filter starting from date"
+              />
+              <span className="tiny faint">to</span>
+              <input
+                type="date"
+                className="input"
+                style={{ width: 130, padding: '4px 6px', fontSize: 11.5 }}
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+                placeholder="To date"
+                title="Filter up to date"
+              />
+            </div>
             <select className="select" style={{ width: 'auto' }} value={sort} onChange={(e) => setSort(e.target.value as SortKey)} aria-label="Sort transactions">
               <option value="date-desc">Newest first</option>
               <option value="date-asc">Oldest first</option>
@@ -232,12 +279,12 @@ export default function Transactions() {
             >
               <span className="dot" style={{ background: 'var(--accent)' }} /> Needs review
             </button>
-            {(search || category !== 'all' || month !== 'all' || account !== 'all' || direction !== 'all' || pendingOnly) && (
+            {(search || category !== 'all' || month !== 'all' || account !== 'all' || direction !== 'all' || pendingOnly || tagFilter !== 'all' || startDate || endDate) && (
               <button
                 className="btn btn-ghost btn-sm"
                 onClick={() => {
                   setSearch(''); setCategory('all'); setMonth('all'); setAccount('all');
-                  setDirection('all'); setPendingOnly(false);
+                  setDirection('all'); setPendingOnly(false); setTagFilter('all'); setStartDate(''); setEndDate('');
                 }}
               >
                 Clear filters
@@ -348,11 +395,43 @@ export default function Transactions() {
                       </td>
                       <td className="mono small nowrap">{t.date.slice(8)} {monthLabel(t.date.slice(0, 7), true).slice(0, 3)}</td>
                       <td>
-                        <div className="row" style={{ gap: 6 }}>
-                          <span className="txn-merchant ellipsis" style={{ maxWidth: 210 }}>{t.merchant}</span>
+                        <div className="row wrap" style={{ gap: 6, alignItems: 'center' }}>
+                          <button
+                            type="button"
+                            className="linkish ellipsis"
+                            style={{ fontWeight: 600, color: 'var(--ink)', textAlign: 'left', padding: 0, maxWidth: 210, background: 'none', border: 'none', cursor: 'pointer' }}
+                            onClick={() => setMerchantDetail(t.merchant)}
+                            title="View merchant analytics & history"
+                          >
+                            {t.merchant}
+                          </button>
                           {t.pending && <span className="badge warn">Review</span>}
                           {t.isExcluded && <span className="badge outline">Excluded</span>}
                           {t.splits && <span className="badge info">Split</span>}
+                          {t.isReimbursable && (
+                            <button
+                              type="button"
+                              className={`badge ${t.reimbursed ? 'pos' : 'warn'}`}
+                              style={{ cursor: 'pointer', padding: '1px 5px', fontSize: 10, border: 'none' }}
+                              onClick={() => {
+                                toggleReimbursed(t.id);
+                                push(`${t.merchant} marked as ${!t.reimbursed ? 'reimbursed' : 'pending reimbursement'}`);
+                              }}
+                              title="Click to toggle reimbursement status"
+                            >
+                              {t.reimbursed ? '✓ Reimbursed' : 'Reimbursable'}
+                            </button>
+                          )}
+                          {t.taxSection && t.taxSection !== 'none' && (
+                            <span className="badge info" style={{ fontSize: 10, padding: '1px 5px' }} title={`Tax deductible under Section ${t.taxSection}`}>
+                              Sec {t.taxSection}
+                            </span>
+                          )}
+                          {t.tags?.map((tg) => (
+                            <span key={tg} className="badge outline" style={{ fontSize: 10, padding: '1px 5px' }}>
+                              {tg}
+                            </span>
+                          ))}
                         </div>
                         <div className="txn-desc" title={t.description}>{t.description}</div>
                       </td>
@@ -496,6 +575,15 @@ export default function Transactions() {
         />
       )}
 
+      {/* merchant deep dive */}
+      {merchantDetail && (
+        <MerchantDeepDiveModal
+          merchant={merchantDetail}
+          txns={state.txns.filter((t) => t.merchant.toLowerCase() === merchantDetail.toLowerCase())}
+          onClose={() => setMerchantDetail(null)}
+        />
+      )}
+
       {/* add */}
       <AddModal open={adding} onClose={() => setAdding(false)} onAdd={(input) => { addTxn(input); push('Transaction added'); setAdding(false); }} />
 
@@ -604,6 +692,10 @@ function EditModal({ txn, onClose, onSave }: { txn: Txn; onClose: () => void; on
   const [amount, setAmount] = useState(String(Math.abs(txn.amount)));
   const [category, setCategory] = useState(txn.category);
   const [note, setNote] = useState(txn.note ?? '');
+  const [tagsStr, setTagsStr] = useState((txn.tags ?? []).join(', '));
+  const [taxSection, setTaxSection] = useState<'80C' | '80D' | 'HRA' | 'none'>(txn.taxSection ?? 'none');
+  const [isReimbursable, setIsReimbursable] = useState(txn.isReimbursable ?? false);
+  const [reimbursed, setReimbursed] = useState(txn.reimbursed ?? false);
 
   return (
     <Modal
@@ -616,7 +708,8 @@ function EditModal({ txn, onClose, onSave }: { txn: Txn; onClose: () => void; on
           <button className="btn" onClick={onClose}>Cancel</button>
           <button
             className="btn btn-primary"
-            onClick={() =>
+            onClick={() => {
+              const tags = tagsStr.split(',').map((s) => s.trim()).filter(Boolean);
               onSave({
                 date,
                 description,
@@ -624,8 +717,12 @@ function EditModal({ txn, onClose, onSave }: { txn: Txn; onClose: () => void; on
                 amount: txn.amount < 0 ? -Math.abs(Number(amount) || 0) : Math.abs(Number(amount) || 0),
                 category,
                 note,
-              })
-            }
+                tags,
+                taxSection,
+                isReimbursable,
+                reimbursed,
+              });
+            }}
           >
             Save changes
           </button>
@@ -639,7 +736,107 @@ function EditModal({ txn, onClose, onSave }: { txn: Txn; onClose: () => void; on
         </div>
         <div className="field"><label>Statement description</label><input className="input" value={description} onChange={(e) => setDescription(e.target.value)} /></div>
         <div className="field"><label>Category</label><CategorySelect value={category} onChange={setCategory} /></div>
+        <div className="form-row">
+          <div className="field">
+            <label>Tags (comma-separated)</label>
+            <input className="input" value={tagsStr} onChange={(e) => setTagsStr(e.target.value)} placeholder="#work, #tax, #travel" />
+          </div>
+          <div className="field">
+            <label>Tax section</label>
+            <select className="select" value={taxSection} onChange={(e) => setTaxSection(e.target.value as any)}>
+              <option value="none">None</option>
+              <option value="80C">Section 80C (ELSS / PF / Investments)</option>
+              <option value="80D">Section 80D (Health Insurance)</option>
+              <option value="HRA">HRA (Rent paid)</option>
+            </select>
+          </div>
+        </div>
+        <div className="row" style={{ gap: 16, marginTop: 4 }}>
+          <label className="row" style={{ gap: 6, cursor: 'pointer', fontSize: 12 }}>
+            <input type="checkbox" checked={isReimbursable} onChange={(e) => setIsReimbursable(e.target.checked)} />
+            Reimbursable business expense
+          </label>
+          {isReimbursable && (
+            <label className="row" style={{ gap: 6, cursor: 'pointer', fontSize: 12 }}>
+              <input type="checkbox" checked={reimbursed} onChange={(e) => setReimbursed(e.target.checked)} />
+              Already reimbursed
+            </label>
+          )}
+        </div>
         <div className="field"><label>Note</label><textarea className="textarea" rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="Why does this line matter?" /></div>
+      </div>
+    </Modal>
+  );
+}
+
+function MerchantDeepDiveModal({
+  merchant,
+  txns,
+  onClose,
+}: {
+  merchant: string;
+  txns: Txn[];
+  onClose: () => void;
+}) {
+  const totalOut = txns.filter((t) => t.amount < 0).reduce((s, t) => s + Math.abs(t.amount), 0);
+  const outTxns = txns.filter((t) => t.amount < 0);
+  const avg = totalOut / Math.max(1, outTxns.length);
+  const dates = txns.map((t) => t.date).sort();
+  const firstSeen = dates[0] ?? '—';
+  const lastSeen = dates[dates.length - 1] ?? '—';
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={`Merchant analytics: ${merchant}`}
+      sub={`${txns.length} lifetime recorded transactions in this ledger.`}
+      footer={<button className="btn btn-primary" onClick={onClose}>Done</button>}
+    >
+      <div className="stack-sm">
+        <div className="grid">
+          <div className="col-4 panel">
+            <div className="panel-body" style={{ padding: 10 }}>
+              <div className="tiny muted">Total spend</div>
+              <div className="medium-number" style={{ fontSize: 18, marginTop: 2 }}>{money(totalOut)}</div>
+            </div>
+          </div>
+          <div className="col-4 panel">
+            <div className="panel-body" style={{ padding: 10 }}>
+              <div className="tiny muted">Visits / Orders</div>
+              <div className="medium-number" style={{ fontSize: 18, marginTop: 2 }}>{txns.length}</div>
+            </div>
+          </div>
+          <div className="col-4 panel">
+            <div className="panel-body" style={{ padding: 10 }}>
+              <div className="tiny muted">Avg ticket</div>
+              <div className="medium-number" style={{ fontSize: 18, marginTop: 2 }}>{money(avg)}</div>
+            </div>
+          </div>
+        </div>
+
+        <div className="row-between small muted" style={{ marginTop: 6 }}>
+          <span>First seen: <strong style={{ color: 'var(--ink)' }}>{firstSeen}</strong></span>
+          <span>Last seen: <strong style={{ color: 'var(--ink)' }}>{lastSeen}</strong></span>
+        </div>
+
+        <div className="divider dashed" style={{ margin: '8px 0' }} />
+        <h3 style={{ fontSize: 12.5, fontWeight: 600 }}>History with {merchant}</h3>
+        <div style={{ maxHeight: 240, overflowY: 'auto' }}>
+          <table className="tbl">
+            <tbody>
+              {txns.slice(0, 10).map((t) => (
+                <tr key={t.id}>
+                  <td className="mono small" style={{ width: 85 }}>{t.date}</td>
+                  <td className="ellipsis" style={{ maxWidth: 180 }}>{t.description}</td>
+                  <td className={`money right ${t.amount > 0 ? 'pos' : ''}`}>
+                    {t.amount > 0 ? '+' : '−'}{money(Math.abs(t.amount))}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
     </Modal>
   );

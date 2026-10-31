@@ -1,6 +1,7 @@
 import type {
   Account,
   AppState,
+  Debt,
   Goal,
   NudgeKind,
   Profile,
@@ -174,6 +175,23 @@ export function buildSeedTxns(): Txn[] {
   const push = (date: string, desc: string, amount: number, accountId = 'acc_hdfc') => {
     if (date > today) return;
     const c = categorize(desc, amount, SEED_RULES);
+    const tags: string[] = [];
+    let isReimbursable = false;
+    let taxSection: '80C' | '80D' | 'HRA' | 'none' = 'none';
+
+    if (/flight|indigo|air india|hotel/i.test(desc)) {
+      tags.push('#work');
+      isReimbursable = true;
+    } else if (/sip|mutual fund|ppf|lic/i.test(desc)) {
+      tags.push('#tax');
+      taxSection = '80C';
+    } else if (/health insurance|star health/i.test(desc)) {
+      tags.push('#tax');
+      taxSection = '80D';
+    } else if (/truffles|cafe|starbucks/i.test(desc) && rng() > 0.6) {
+      tags.push('#social');
+    }
+
     out.push({
       id: `seed_${++n}`,
       date,
@@ -187,6 +205,10 @@ export function buildSeedTxns(): Txn[] {
       source: 'seed',
       hash: rowHash(date, Math.abs(amount), desc),
       createdAt: Date.parse(date),
+      tags: tags.length ? tags : undefined,
+      isReimbursable: isReimbursable ? true : undefined,
+      reimbursed: isReimbursable ? date < today.slice(0, 7) + '-15' : undefined,
+      taxSection: taxSection !== 'none' ? taxSection : undefined,
     });
   };
 
@@ -318,6 +340,16 @@ const PROFILE: Profile = {
     { id: 'fx_airtel', name: 'Mobile', amount: 1199, category: 'mobile', dueDay: 8 },
     { id: 'fx_act', name: 'Broadband', amount: 1349, category: 'internet', dueDay: 9 },
     { id: 'fx_bescom', name: 'Electricity', amount: 3200, category: 'utilities', dueDay: 10 },
+  ],
+  categoryBudgets: {
+    dining: 14000,
+    groceries: 12000,
+    shopping: 8000,
+    entertainment: 4000,
+  },
+  debts: [
+    { id: 'debt_car', name: 'Car Loan (HDFC)', principal: 340000, interestRate: 8.9, minimumMonthly: 8500, category: 'transport' },
+    { id: 'debt_card', name: 'Credit Card (ICICI)', principal: 45000, interestRate: 36.0, minimumMonthly: 2500, category: 'shopping' },
   ],
 };
 
