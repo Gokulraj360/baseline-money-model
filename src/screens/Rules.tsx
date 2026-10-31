@@ -2,7 +2,6 @@ import { useMemo, useState } from 'react';
 import { useApp } from '../store/AppStore';
 import type { Rule } from '../types';
 import { CATEGORIES, CATEGORY_MAP } from '../data/categories';
-import { CATEGORY_MAP as CM } from '../data/categories';
 import { money } from '../lib/format';
 import { Icon } from '../components/Icon';
 import { Confirm, Empty, Modal, Switch, useToast } from '../components/ui';
@@ -169,8 +168,8 @@ export default function Rules() {
                       {state.corrections.slice(0, 8).map((c) => (
                         <tr key={c.id}>
                           <td className="small ellipsis" style={{ maxWidth: 300 }}>{c.description}</td>
-                          <td className="small muted">{CM[c.from]?.name ?? c.from}</td>
-                          <td className="small">{CM[c.to]?.name ?? c.to}</td>
+                          <td className="small muted">{CATEGORY_MAP[c.from]?.name ?? c.from}</td>
+                          <td className="small">{CATEGORY_MAP[c.to]?.name ?? c.to}</td>
                           <td className="hide-sm">{c.learnedRuleId ? <span className="badge info">Rule</span> : <span className="badge outline">Once</span>}</td>
                           <td className="tiny mono" style={{ color: 'var(--muted)' }}>
                             {new Date(c.at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}

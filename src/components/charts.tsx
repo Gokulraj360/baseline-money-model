@@ -480,7 +480,3 @@ export function ScenarioChart({
     </div>
   );
 }
-
-export function useMoneyTicker() {
-  return useMemo(() => ({ money, compact }), []);
-}

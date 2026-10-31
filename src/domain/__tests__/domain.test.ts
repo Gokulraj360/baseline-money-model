@@ -110,6 +110,20 @@ describe('categorisation and learned rules', () => {
   it('derives a reusable pattern from a messy narration', () => {
     expect(deriveRulePattern('UPI/SWIGGY/4152093', 'Swiggy')).toBe('SWIGGY');
     expect(deriveRulePattern('NEFT-ACME RENTALS-8842', 'Acme Rentals')).toBe('ACME RENTALS');
+    expect(deriveRulePattern('TRUFFLES ST MARKS ROAD', 'TRUFFLES ST MARKS ROAD')).toBe('TRUFFLES ST MARKS ROAD');
+  });
+
+  it('corrects and retroactively matches past transactions with a learned pattern', () => {
+    const pattern = deriveRulePattern('TRUFFLES ST MARKS ROAD', 'Truffles');
+    const pastTxns = [
+      { id: 't1', description: 'TRUFFLES ST MARKS ROAD', category: 'other' },
+      { id: 't2', description: 'TRUFFLES ST MARKS ROAD', category: 'other' },
+      { id: 't3', description: 'SOME OTHER CAFE', category: 'other' },
+    ];
+    const re = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    const matches = pastTxns.filter((t) => re.test(t.description) && t.category !== 'dining');
+    expect(matches).toHaveLength(2);
+    expect(matches.map((m) => m.id)).toEqual(['t1', 't2']);
   });
 });
 

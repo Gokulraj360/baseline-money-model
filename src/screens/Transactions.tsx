@@ -7,7 +7,7 @@ import { monthLabel, monthKey, nowMonth, todayISO } from '../lib/date';
 import { useRoute } from '../lib/router';
 import { Icon } from '../components/Icon';
 import { Confirm, Modal, Empty, useToast } from '../components/ui';
-import { categorize } from '../domain/categorize';
+import { categorize, deriveRulePattern } from '../domain/categorize';
 import { downloadFile, toCSV } from '../lib/export';
 
 const PAGE_SIZE = 25;
@@ -63,12 +63,22 @@ export default function Transactions() {
 
   const [correction, setCorrection] = useState<{ txn: Txn; category: string } | null>(null);
   const [learn, setLearn] = useState(true);
+  const [applyRetro, setApplyRetro] = useState(false);
   const [splitting, setSplitting] = useState<Txn | null>(null);
   const [editing, setEditing] = useState<Txn | null>(null);
   const [adding, setAdding] = useState(false);
   const [deleting, setDeleting] = useState<string[] | null>(null);
   const [bulkCat, setBulkCat] = useState('groceries');
   const [bulkLearn, setBulkLearn] = useState(true);
+
+  const matchingPastCount = useMemo(() => {
+    if (!correction || !learn) return 0;
+    const pattern = deriveRulePattern(correction.txn.description, correction.txn.merchant);
+    const re = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    return state.txns.filter(
+      (t) => t.id !== correction.txn.id && t.category !== correction.category && re.test(t.description)
+    ).length;
+  }, [correction, learn, state.txns]);
 
   useEffect(() => {
     const q = route.params.get('q');
@@ -143,13 +153,18 @@ export default function Transactions() {
 
   const saveCorrection = () => {
     if (!correction) return;
-    const ruleId = correctCategory(correction.txn.id, correction.category, learn);
+    const res = correctCategory(correction.txn.id, correction.category, learn, applyRetro);
     push(
       learn
-        ? `Filed under ${CATEGORY_MAP[correction.category].name}. ${ruleId ? 'A rule was learned for future transactions.' : 'The existing rule was updated.'}`
+        ? `Filed under ${CATEGORY_MAP[correction.category].name}. ${
+            res.created
+              ? `A rule was learned for future transactions${res.retroCount ? ` and applied to ${res.retroCount} past transaction${res.retroCount > 1 ? 's' : ''}` : ''}.`
+              : `The existing rule was updated${res.retroCount ? ` and applied to ${res.retroCount} past transaction${res.retroCount > 1 ? 's' : ''}` : ''}.`
+          }`
         : 'Category updated for this transaction only.'
     );
     setCorrection(null);
+    setApplyRetro(false);
   };
 
   return (
@@ -413,12 +428,12 @@ export default function Transactions() {
       {/* correction */}
       <Modal
         open={!!correction}
-        onClose={() => setCorrection(null)}
+        onClose={() => { setCorrection(null); setApplyRetro(false); }}
         title="Recategorise this transaction"
         sub={correction ? `${correction.txn.merchant} · ${money(Math.abs(correction.txn.amount))} · ${correction.txn.date}` : ''}
         footer={
           <>
-            <button className="btn" onClick={() => setCorrection(null)}>Cancel</button>
+            <button className="btn" onClick={() => { setCorrection(null); setApplyRetro(false); }}>Cancel</button>
             <button className="btn btn-primary" onClick={saveCorrection}>Save category</button>
           </>
         }
@@ -443,13 +458,27 @@ export default function Transactions() {
             </label>
             {learn && (
               <div className="note">
-                Future lines containing <span className="mono">“{correction.txn.merchant.toUpperCase().slice(0, 18)}”</span> will be
+                Future lines containing <span className="mono">“{deriveRulePattern(correction.txn.description, correction.txn.merchant)}”</span> will be
                 filed under <strong>{CATEGORY_MAP[correction.category]?.name}</strong> automatically. You can edit or delete
                 the rule later.
               </div>
             )}
+            {learn && matchingPastCount > 0 && (
+              <label className="check" style={{ marginTop: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={applyRetro}
+                  onChange={(e) => setApplyRetro(e.target.checked)}
+                />
+                <span>
+                  Also apply to <strong>{matchingPastCount}</strong> matching past transaction{matchingPastCount > 1 ? 's' : ''} in the ledger
+                </span>
+              </label>
+            )}
             <p className="tiny" style={{ color: 'var(--muted)' }}>
-              Only this transaction changes now. Rules can be applied to past transactions from the Rules screen.
+              {applyRetro
+                ? `Will update this transaction and ${matchingPastCount} other matching line${matchingPastCount > 1 ? 's' : ''}.`
+                : 'Only this transaction changes now unless you apply the rule to past lines.'}
             </p>
           </div>
         )}

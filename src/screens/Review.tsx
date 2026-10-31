@@ -10,7 +10,6 @@ import { CategoryBars, Donut } from '../components/charts';
 import { Empty, useToast } from '../components/ui';
 import { downloadFile, toCSV } from '../lib/export';
 import { navigate } from '../lib/router';
-import { buildSeedTxns } from '../data/seed';
 
 export default function Review() {
   const { state } = useApp();

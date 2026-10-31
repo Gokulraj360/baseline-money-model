@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useApp } from '../store/AppStore';
-import type { ParseResult, Txn } from '../types';
+import type { ParseResult } from '../types';
 import { parseCSV, parseSMS, parseStatementText } from '../domain/parse';
 import { categorize } from '../domain/categorize';
 import { CATEGORIES, CATEGORY_MAP } from '../data/categories';

@@ -85,7 +85,12 @@ interface AppContextValue {
   importRows: (rows: ParsedRow[], source: Txn['source'], fileName: string) => ImportSummary;
   approveBatch: (batchId: string) => void;
   discardBatch: (batchId: string) => void;
-  correctCategory: (txnId: string, category: string, learn: boolean) => string | null;
+  correctCategory: (
+    txnId: string,
+    category: string,
+    learn: boolean,
+    applyRetro?: boolean
+  ) => { ruleId: string | null; created: boolean; retroCount: number };
   bulkCategory: (ids: string[], category: string, learn: boolean) => void;
   splitTxn: (id: string, splits: { category: string; amount: number }[]) => void;
   deleteTxns: (ids: string[]) => void;
@@ -247,33 +252,117 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   };
 
   const correctCategory = useCallback(
-    (txnId: string, category: string, learn: boolean): string | null => {
+    (
+      txnId: string,
+      category: string,
+      learn: boolean,
+      applyRetro = false
+    ): { ruleId: string | null; created: boolean; retroCount: number } => {
+      const currentTxn = state.txns.find((t) => t.id === txnId);
+      if (!currentTxn) return { ruleId: null, created: false, retroCount: 0 };
+
       let ruleId: string | null = null;
+      let created = false;
+      let retroCount = 0;
+
+      if (learn) {
+        const pattern = deriveRulePattern(currentTxn.description, currentTxn.description);
+        const existing = state.rules.find(
+          (r) => r.pattern.toUpperCase() === pattern && r.category === category
+        );
+        if (existing) {
+          ruleId = existing.id;
+          created = false;
+        } else {
+          ruleId = uid('rule');
+          created = true;
+        }
+
+        if (applyRetro) {
+          const re = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+          const matches = state.txns.filter(
+            (t) => t.id !== txnId && re.test(t.description) && t.category !== category
+          );
+          retroCount = matches.length;
+        }
+      }
+
+      const assignedRuleId = ruleId;
+      const assignedCreated = created;
+      const countToRetro = retroCount;
+
       update((s) => {
         const txn = s.txns.find((t) => t.id === txnId);
         if (!txn) return s;
         let rules = s.rules;
+        let finalRuleId = assignedRuleId;
+
         if (learn) {
-          const res = learnRule(s, txn.description, category);
-          rules = res.rules;
-          ruleId = res.ruleId;
+          const pattern = deriveRulePattern(txn.description, txn.description);
+          const existing = s.rules.find(
+            (r) => r.pattern.toUpperCase() === pattern && r.category === category
+          );
+          if (existing) {
+            finalRuleId = existing.id;
+            rules = s.rules.map((r) =>
+              r.id === existing.id
+                ? {
+                    ...r,
+                    hits: r.hits + 1 + countToRetro,
+                    enabled: true,
+                    lastHitAt: Date.now(),
+                  }
+                : r
+            );
+          } else {
+            const id = finalRuleId ?? uid('rule');
+            finalRuleId = id;
+            const newRule: Rule = {
+              id,
+              pattern,
+              field: 'description',
+              matchType: 'contains',
+              category,
+              source: 'learned',
+              priority: 50,
+              hits: countToRetro,
+              enabled: true,
+              createdAt: Date.now(),
+              lastHitAt: countToRetro > 0 ? Date.now() : undefined,
+            };
+            rules = [newRule, ...s.rules];
+          }
         }
+
+        const pattern = learn ? deriveRulePattern(txn.description, txn.description) : '';
+        const re = pattern ? new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') : null;
+
         return {
           ...s,
           rules,
-          txns: s.txns.map((t) =>
-            t.id === txnId
-              ? {
-                  ...t,
-                  category,
-                  confidence: 1,
-                  why: learn
-                    ? `You set this category. A rule was learned so future “${txn.merchant}” lines land here.`
-                    : 'Category set manually.',
-                  pending: false,
-                }
-              : t
-          ),
+          txns: s.txns.map((t) => {
+            if (t.id === txnId) {
+              return {
+                ...t,
+                category,
+                confidence: 1,
+                why: learn
+                  ? `You set this category. A rule was learned so future “${txn.merchant}” lines land here.`
+                  : 'Category set manually.',
+                pending: false,
+              };
+            }
+            if (applyRetro && re && re.test(t.description) && t.category !== category) {
+              return {
+                ...t,
+                category,
+                confidence: 0.99,
+                why: `Applied learned rule “${pattern}” retroactively.`,
+                pending: false,
+              };
+            }
+            return t;
+          }),
           corrections: [
             {
               id: uid('corr'),
@@ -282,15 +371,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               from: txn.category,
               to: category,
               at: Date.now(),
-              learnedRuleId: learn ? ruleId ?? undefined : undefined,
+              learnedRuleId: learn ? finalRuleId ?? undefined : undefined,
             },
             ...s.corrections,
           ],
         };
       });
-      return ruleId;
+
+      return { ruleId: assignedRuleId, created: assignedCreated, retroCount };
     },
-    [update]
+    [state.txns, state.rules, update]
   );
 
   const bulkCategory = useCallback(
